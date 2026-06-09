@@ -605,7 +605,8 @@
       "user-info": "用户信息",
       "backup": "备份恢复",
       "social-information": "媒体评分",
-      "native-bridge": "原生通信桥"
+      "native-bridge": "原生通信桥",
+      "elysium-agent": "Elysium Agent"
     },
     "ui": {
       "changeLanguage": "切换语言",
@@ -722,6 +723,32 @@
       "setupCommand": "运行以下命令将此扩展注册到 CLI 工具：",
       "setupHint": "运行命令后，重启浏览器或点击测试连接。",
       "privacy": "启用后，原生通信桥允许本地安装的 CLI 工具访问扩展数据，包括站点配置、搜索结果、下载历史、用户信息和下载器状态。所有通信均在本地进行（浏览器与本机进程之间），不会将数据发送至任何远程服务器。您可以随时禁用此功能或撤销权限。"
+    }
+  },
+  "SetElysiumAgent": {
+    "connection": {
+      "title": "Elysium 连接",
+      "enabled": "启用 Elysium Agent",
+      "serverUrl": "后端服务地址",
+      "serverUrlHint": "可填写 http://主机:端口 或 http://主机:端口/api，也兼容 ws://主机:端口/ws/pt/depiler",
+      "username": "登录用户名",
+      "password": "登录密码",
+      "reconnect": "保存并重连",
+      "refresh": "刷新状态"
+    },
+    "runtime": {
+      "title": "运行状态",
+      "connectedAt": "连接时间",
+      "lastSeenAt": "最近心跳"
+    },
+    "status": {
+      "disabled": "已禁用",
+      "idle": "未配置",
+      "authenticating": "认证中...",
+      "connecting": "连接中...",
+      "connected": "已连接",
+      "retrying": "重试中...",
+      "error": "错误"
     }
   },
   "SetDownloader": {

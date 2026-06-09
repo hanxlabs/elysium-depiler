@@ -117,3 +117,10 @@ export async function clearSiteFaviconCache() {
 }
 
 onMessage("clearSiteFaviconCache", async () => await clearSiteFaviconCache());
+
+export async function getSiteLevelRequirements(siteId: string) {
+  const site = await getSiteInstance(siteId);
+  return site?.metadata?.levelRequirements ?? [];
+}
+
+onMessage("getSiteLevelRequirements", async ({ data: siteId }) => getSiteLevelRequirements(siteId));

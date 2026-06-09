@@ -1,5 +1,6 @@
 import { defineExtensionMessaging } from "@webext-core/messaging";
 import type {
+  EResultParseStatus,
   IAdvancedSearchRequestConfig,
   ISearchResult,
   ISiteUserConfig,
@@ -95,6 +96,7 @@ interface ProtocolMap extends TMessageMap {
   getSiteUserConfig(data: { siteId: TSiteID; flush?: boolean }): ISiteUserConfig;
   getSiteFavicon(data: { site: TSiteID | getFaviconMetadata; flush?: boolean }): string;
   clearSiteFaviconCache(): void;
+  getSiteLevelRequirements(siteId: TSiteID): Array<{ id: number; name: string; nameAka?: string[] }>;
 
   // 2.2 站点搜索、搜索快照 ( utils/search )
   getSiteSearchResult(data: {
@@ -172,6 +174,28 @@ interface ProtocolMap extends TMessageMap {
   nativeBridgeGetStatus(): BridgeStatus;
   nativeBridgeSetEnabled(data: boolean): BridgeStatus;
   nativeBridgeReconnect(): BridgeStatus;
+
+  // 2.10 Elysium browser-agent bridge
+  elysiumAgentGetStatus(): {
+    enabled: boolean;
+    connected: boolean;
+    state: string;
+    lastError?: string;
+    connectedAt?: number;
+    lastSeenAt?: number;
+  };
+  elysiumAgentReconnect(): void;
+
+  // 2.11 Elysium agent 触发 depiler 原有搜索（background → options）
+  triggerAgentSearch(data: {
+    requestId: string;
+    siteKeys: string[];
+    keyword: string;
+    siteCookies?: Record<string, string>;
+  }): void;
+
+  // 2.12 options → background 转发消息到 server WebSocket
+  forwardToServer(payload: Record<string, any>): void;
 }
 
 // 全局消息处理函数映射

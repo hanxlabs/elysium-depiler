@@ -3,7 +3,9 @@ import { watch, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useLocale as useVuetifyLocal } from "vuetify";
 import { useDevicePixelRatio } from "@vueuse/core";
+import { useRouter } from "vue-router";
 
+import { onMessage } from "@/messages.ts";
 import { useConfigStore } from "@/options/stores/config.ts";
 import { useRuntimeStore } from "@/options/stores/runtime.ts";
 import { vuetifyLangMap } from "@/options/plugins/vuetify.ts";
@@ -17,6 +19,19 @@ const { locale: currentVueI18nLocal, t } = useI18n({ useScope: "global" });
 
 const configStore = useConfigStore();
 const runtimeStore = useRuntimeStore();
+const router = useRouter();
+
+// ====== Elysium Agent 搜索：复用 depiler 原有搜索流程 ======
+onMessage("triggerAgentSearch", async ({ data }) => {
+  const { requestId, siteKeys, keyword } = data;
+
+  // 自动导航到搜索页面
+  router.push({ name: "SearchEntity" });
+
+  // 动态 import，避免模块提前加载导致 Pinia 未初始化
+  const { doAgentSearch } = await import("@/options/views/Overview/SearchEntity/utils/search.ts");
+  doAgentSearch(siteKeys, keyword, requestId);
+});
 
 watch(
   () => configStore.lang,

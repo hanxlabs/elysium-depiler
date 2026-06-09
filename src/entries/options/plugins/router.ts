@@ -33,6 +33,12 @@ export const setBaseChildren: RouteRecordRaw[] = [
     component: () => import("../views/Settings/SetBase/NativeBridgeWindow.vue"),
   },
   {
+    path: "elysium-agent",
+    name: "SetBaseElysiumAgent",
+    meta: { icon: "mdi-web" },
+    component: () => import("../views/Settings/SetBase/ElysiumAgentWindow.vue"),
+  },
+  {
     path: "backup",
     name: "SetBaseBackup",
     meta: { icon: "mdi-backup-restore" },

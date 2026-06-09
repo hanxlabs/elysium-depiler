@@ -5,6 +5,7 @@ import {
   EResultParseStatus,
   ETorrentStatus,
   type IAdvanceKeywordSearchConfig,
+  type ITorrent,
   type TSiteID,
 } from "@ptd/site";
 
@@ -40,12 +41,20 @@ searchQueue.on("active", () => {
   runtimeStore.search.searchResult.forEach((r) => globalExistingIds.add(r.uniqueId));
 });
 
+// Agent 搜索回调：搜索完成后通知 background 发结果给 server
+let agentSearchCallback: ((allItems: ISearchResultTorrent[]) => void) | null = null;
+
 searchQueue.on("idle", () => {
   runtimeStore.search.isSearching = false;
   runtimeStore.search.endAt = Date.now();
 
-  globalExistingIds.clear(); // 队列空闲时，清空全局 Set
-  buildAdvanceItemPropsFn(); // 队列空闲时，构建高级筛选词
+  globalExistingIds.clear();
+  buildAdvanceItemPropsFn();
+
+  if (agentSearchCallback) {
+    agentSearchCallback(runtimeStore.search.searchResult);
+    agentSearchCallback = null;
+  }
 });
 
 interface ISearchPlanStatusMap {
@@ -260,4 +269,72 @@ export async function retrySearch(retryStatus: EResultParseStatus[] = defaultErr
   for (const plan of shouldRetrySearchPlan) {
     await doSearchEntity(plan.siteId, plan.searchEntryName, plan.searchEntry, true);
   }
+}
+
+/**
+ * Elysium Agent 搜索：用 depiler 原有搜索流程执行，结果自动渲染 UI，完成后通知 background 发给 server。
+ */
+export async function doAgentSearch(siteKeys: string[], keyword: string, requestId: string) {
+  runtimeStore.resetSearchData();
+  runtimeStore.search.searchKey = keyword;
+  runtimeStore.search.searchPlanKey = "elysium_agent";
+  runtimeStore.search.startAt = Date.now();
+  runtimeStore.search.isSearching = true;
+
+  const allSites = siteKeys.map((siteId) => ({
+    siteId: siteId as TSiteID,
+    searchEntries: { default: { id: "default", merge: true } } as Record<string, IAdvanceKeywordSearchConfig>,
+  }));
+
+  for (const { siteId, searchEntries } of allSites) {
+    for (const [searchEntryName, searchEntry] of Object.entries(searchEntries)) {
+      await doSearchEntity(siteId, searchEntryName, searchEntry);
+    }
+  }
+
+  // idle 回调：全部完成后，按站点分组发结果给 server
+  agentSearchCallback = (allItems: ISearchResultTorrent[]) => {
+    const grouped = new Map<string, ISearchResultTorrent[]>();
+    for (const item of allItems) {
+      if (!grouped.has(item.site)) grouped.set(item.site, []);
+      grouped.get(item.site)!.push(item);
+    }
+    for (const [siteKey, items] of grouped) {
+      const siteName = metadataStore.siteNameMap[siteKey] ?? siteKey;
+      const normalized = items.map((item) => ({
+        id: `${siteKey}:${item.id ?? item.url ?? item.title}`,
+        siteKey,
+        siteName,
+        siteFavicon: "",
+        title: item.title,
+        subTitle: item.subTitle,
+        freeStatus: item.tags?.map((t: any) => t.name).join(" / ") ?? "",
+        downloadState: item.status,
+        publishTimeText: item.time ? new Date(item.time).toLocaleString() : "",
+        sizeText: typeof item.size === "number" ? formatBytes(item.size) : "",
+        seeders: item.seeders,
+        leechers: item.leechers,
+        completed: item.completed,
+        detailUrl: item.url,
+        downloadUrl: item.link,
+      }));
+      sendMessage("forwardToServer", {
+        type: "siteResult",
+        requestId,
+        body: { siteKey, siteName, success: true, items: normalized, message: `搜索完成，${items.length} 条结果` },
+      } as any).catch(() => {});
+    }
+    sendMessage("forwardToServer", { type: "complete", requestId, body: { message: "done" } } as any).catch(() => {});
+  };
+}
+
+function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(2)} ${units[unit]}`;
 }

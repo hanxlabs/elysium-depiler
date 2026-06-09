@@ -605,7 +605,8 @@
       "user-info": "UserInfo",
       "backup": "Backup & Restore",
       "social-information": "Social Rating",
-      "native-bridge": "Native Bridge"
+      "native-bridge": "Native Bridge",
+      "elysium-agent": "Elysium Agent"
     },
     "ui": {
       "changeLanguage": "Switch Language",
@@ -722,6 +723,32 @@
       "setupCommand": "Run the following command to register this extension with the CLI tool:",
       "setupHint": "After running the command, restart the browser or click Test Connection.",
       "privacy": "When enabled, the native bridge allows the locally installed CLI tool to access extension data including site configuration, search results, download history, user info, and downloader status. All communication is local (between browser and local process) — no data is sent to remote servers. You can disable this feature or revoke the permission at any time."
+    }
+  },
+  "SetElysiumAgent": {
+    "connection": {
+      "title": "Elysium Connection",
+      "enabled": "Enable Elysium Agent",
+      "serverUrl": "Backend server URL",
+      "serverUrlHint": "Use http://host:port or http://host:port/api; ws://host:port/ws/pt/depiler is also accepted.",
+      "username": "Login username",
+      "password": "Login password",
+      "reconnect": "Save and reconnect",
+      "refresh": "Refresh status"
+    },
+    "runtime": {
+      "title": "Runtime",
+      "connectedAt": "Connected at",
+      "lastSeenAt": "Last heartbeat"
+    },
+    "status": {
+      "disabled": "Disabled",
+      "idle": "Not configured",
+      "authenticating": "Authenticating...",
+      "connecting": "Connecting...",
+      "connected": "Connected",
+      "retrying": "Retrying...",
+      "error": "Error"
     }
   },
   "SetDownloader": {

@@ -313,6 +313,13 @@ export const useConfigStore = defineStore("config", {
       triggerThreshold: 2,
       extensionDuration: 3,
     },
+
+    elysiumAgent: {
+      enabled: false,
+      serverUrl: "",
+      username: "",
+      password: "",
+    },
   }),
   getters: {
     uiTheme(): Exclude<supportThemeType, "auto"> {

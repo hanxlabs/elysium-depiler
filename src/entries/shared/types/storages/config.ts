@@ -248,4 +248,11 @@ export interface IConfigPiniaStorageSchema {
     triggerThreshold: number; // 触发阈值（周），默认 2
     extensionDuration: number; // 延长时长（月），默认 3
   };
+
+  elysiumAgent: {
+    enabled: boolean;
+    serverUrl: string;
+    username: string;
+    password: string;
+  };
 }
