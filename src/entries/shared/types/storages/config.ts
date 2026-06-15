@@ -157,6 +157,10 @@ export interface IConfigPiniaStorageSchema {
     uploadAtFormatAsAlive: boolean;
     // 是否限制种子标题列的最大宽度，防止过长导致表格布局混乱
     limitTorrentTitleTdWidth: boolean;
+    // 种子标签数量超过多少个时使用分组显示（0表示不限制）
+    maxTagCountBeforeGroup: number;
+    // 默认隐藏的标签名称列表
+    hiddenTagNames: string[];
   };
 
   userInfo: {
@@ -182,6 +186,8 @@ export interface IConfigPiniaStorageSchema {
   download: {
     // 是否保存下载记录
     saveDownloadHistory: boolean;
+
+    allowDownloaderFilterForSite: boolean; // 是否启用站点过滤器，启用后可在下载器设置中配置每个下载器可使用的站点
 
     // 当使用本地方法下载时，如何下载种子
     localDownloadMethod: TLocalDownloadMethod;

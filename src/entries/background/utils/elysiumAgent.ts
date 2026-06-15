@@ -488,7 +488,7 @@ function openTabAndAutoClose(url: string) {
     if (!tab.id) return;
 
     const tabId = tab.id;
-    const listener = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+    const listener: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (updatedTabId, changeInfo) => {
       if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
       // 页面加载完成，移除监听器
       chrome.tabs.onUpdated.removeListener(listener);
