@@ -41,8 +41,23 @@ searchQueue.on("active", () => {
   runtimeStore.search.searchResult.forEach((r) => globalExistingIds.add(r.uniqueId));
 });
 
-// Agent 搜索回调：搜索完成后通知 background 发结果给 server
-let agentSearchCallback: ((allItems: ISearchResultTorrent[]) => void) | null = null;
+interface IAgentSearchSiteResult {
+  siteId: TSiteID;
+  siteName?: string;
+  searchStatus: EResultParseStatus;
+  searchStatusMsg?: string;
+  items: ISearchResultTorrent[];
+}
+
+type TAgentSearchSiteCallback = (result: IAgentSearchSiteResult) => void | Promise<void>;
+
+interface IAgentSearchState {
+  requestId: string;
+  siteKeys: string[];
+  sentSites: Set<string>;
+}
+
+let agentSearchState: IAgentSearchState | null = null;
 
 searchQueue.on("idle", () => {
   runtimeStore.search.isSearching = false;
@@ -51,9 +66,12 @@ searchQueue.on("idle", () => {
   globalExistingIds.clear();
   buildAdvanceItemPropsFn();
 
-  if (agentSearchCallback) {
-    agentSearchCallback(runtimeStore.search.searchResult);
-    agentSearchCallback = null;
+  if (agentSearchState) {
+    const currentAgentSearch = agentSearchState;
+    agentSearchState = null;
+    void finishAgentSearch(currentAgentSearch).catch((error) => {
+      console.error("Failed to finish agent search:", error);
+    });
   }
 });
 
@@ -103,6 +121,7 @@ export async function doSearchEntity(
   searchEntryName: string,
   searchEntry: IAdvanceKeywordSearchConfig,
   flush: boolean = false,
+  onComplete?: TAgentSearchSiteCallback,
 ) {
   const solutionKey = `${siteId}|$|${searchEntryName}` as TSearchSolutionKey;
   let queuePriority = runtimeStore.search.searchPlan[solutionKey]?.queuePriority ?? 1;
@@ -139,70 +158,105 @@ export async function doSearchEntity(
       console.log(`search ${solutionKey} start at ${startAt}`);
       runtimeStore.search.searchPlan[solutionKey].status = EResultParseStatus.working;
 
-      let searchKeyword = runtimeStore.search.searchKey ?? "";
-      if (configStore.searchEntity.treatTTQueryAsImdbSearch && searchKeyword.match(/^tt\d{7,8}/)) {
-        searchKeyword = "imdb|" + searchKeyword;
-      }
-
-      let imdbSearchKeywords;
-      if (searchKeyword.startsWith("imdb|")) {
-        imdbSearchKeywords = definedFilters.extImdbId(searchKeyword.replace("imdb|", ""));
-      }
-
-      const {
-        status: searchStatus,
-        statusMsg: searchStatusMsg,
-        data: searchResult,
-      } = await sendMessage("getSiteSearchResult", {
-        keyword: searchKeyword,
-        siteId,
-        searchEntry,
-      });
-      console.log(
-        `success get search ${solutionKey} result, with code ${searchStatus}: ${searchStatusMsg ?? ""}`,
-        searchResult,
-      );
-      runtimeStore.search.searchPlan[solutionKey].status = searchStatus;
-      searchStatusMsg && (runtimeStore.search.searchPlan[solutionKey].statusMsg = searchStatusMsg);
-
-      // 优化：批量处理搜索结果，减少响应式更新次数
-      const newItems: ISearchResultTorrent[] = [];
-
-      for (const item of searchResult) {
-        const itemUniqueId = `${item.site}-${item.id}`;
-        if (!globalExistingIds.has(itemUniqueId)) {
-          const searchResultItem = item as ISearchResultTorrent;
-          searchResultItem.uniqueId = itemUniqueId;
-          searchResultItem.solutionId = searchEntryName;
-          searchResultItem.solutionKey = solutionKey;
-          searchResultItem.status ??= ETorrentStatus.unknown; // 确保 status 字段有默认值，避免过滤器无法处理 undefined
-
-          if (imdbSearchKeywords && configStore.searchEntity.forceImdbIdMatchFilter && searchResultItem.ext_imdb) {
-            if (definedFilters.extImdbId(searchResultItem.ext_imdb) !== imdbSearchKeywords) {
-              continue;
-            }
-          }
-
-          newItems.push(markRaw(searchResultItem)); // 使用 markRaw 冻结对象，避免 Vue 创建响应式代理，提升性能
-          globalExistingIds.add(itemUniqueId);
+      let callbackResult: IAgentSearchSiteResult | null = null;
+      try {
+        let searchKeyword = runtimeStore.search.searchKey ?? "";
+        if (configStore.searchEntity.treatTTQueryAsImdbSearch && searchKeyword.match(/^tt\d{7,8}/)) {
+          searchKeyword = "imdb|" + searchKeyword;
         }
+
+        let imdbSearchKeywords;
+        if (searchKeyword.startsWith("imdb|")) {
+          imdbSearchKeywords = definedFilters.extImdbId(searchKeyword.replace("imdb|", ""));
+        }
+
+        const {
+          status: searchStatus,
+          statusMsg: searchStatusMsg,
+          data: searchResult,
+        } = await sendMessage("getSiteSearchResult", {
+          keyword: searchKeyword,
+          siteId,
+          searchEntry,
+        });
+        console.log(
+          `success get search ${solutionKey} result, with code ${searchStatus}: ${searchStatusMsg ?? ""}`,
+          searchResult,
+        );
+        runtimeStore.search.searchPlan[solutionKey].status = searchStatus;
+        searchStatusMsg && (runtimeStore.search.searchPlan[solutionKey].statusMsg = searchStatusMsg);
+
+        // 优化：批量处理搜索结果，减少响应式更新次数
+        const newItems: ISearchResultTorrent[] = [];
+
+        for (const item of searchResult) {
+          const itemUniqueId = `${item.site}-${item.id}`;
+          if (!globalExistingIds.has(itemUniqueId)) {
+            const searchResultItem = item as ISearchResultTorrent;
+            searchResultItem.uniqueId = itemUniqueId;
+            searchResultItem.solutionId = searchEntryName;
+            searchResultItem.solutionKey = solutionKey;
+            searchResultItem.status ??= ETorrentStatus.unknown; // 确保 status 字段有默认值，避免过滤器无法处理 undefined
+
+            if (imdbSearchKeywords && configStore.searchEntity.forceImdbIdMatchFilter && searchResultItem.ext_imdb) {
+              if (definedFilters.extImdbId(searchResultItem.ext_imdb) !== imdbSearchKeywords) {
+                continue;
+              }
+            }
+
+            newItems.push(markRaw(searchResultItem)); // 使用 markRaw 冻结对象，避免 Vue 创建响应式代理，提升性能
+            globalExistingIds.add(itemUniqueId);
+          }
+        }
+
+        // 批量添加新项目，减少响应式更新
+        if (newItems.length > 0) {
+          runtimeStore.search.searchResult.push(...newItems);
+        }
+
+        // 更新计数状态
+        const endAt = Date.now();
+        runtimeStore.search.searchPlan[solutionKey].count = newItems.length;
+        runtimeStore.search.searchPlan[solutionKey].endAt = endAt;
+        runtimeStore.search.searchPlan[solutionKey].costTime = endAt - startAt;
+
+        // 直接向 advanceItemPropsRef.site 添加 siteId，而不是重新构造全部字典，以便于站点快速选择器更新
+        const sites = advanceItemPropsRef.value.site;
+        if (Array.isArray(sites) && !sites.includes(siteId)) {
+          sites.push(siteId);
+        }
+
+        callbackResult = {
+          siteId,
+          siteName: metadataStore.siteNameMap[siteId] ?? siteId,
+          searchStatus,
+          searchStatusMsg,
+          items: newItems,
+        };
+      } catch (error: any) {
+        const message = error?.message ?? String(error ?? "搜索失败");
+        const endAt = Date.now();
+        console.error(`search ${solutionKey} failed:`, error);
+        runtimeStore.search.searchPlan[solutionKey].status = EResultParseStatus.unknownError;
+        runtimeStore.search.searchPlan[solutionKey].statusMsg = message;
+        runtimeStore.search.searchPlan[solutionKey].count = 0;
+        runtimeStore.search.searchPlan[solutionKey].endAt = endAt;
+        runtimeStore.search.searchPlan[solutionKey].costTime = endAt - startAt;
+        callbackResult = {
+          siteId,
+          siteName: metadataStore.siteNameMap[siteId] ?? siteId,
+          searchStatus: EResultParseStatus.unknownError,
+          searchStatusMsg: message,
+          items: [],
+        };
       }
 
-      // 批量添加新项目，减少响应式更新
-      if (newItems.length > 0) {
-        runtimeStore.search.searchResult.push(...newItems);
-      }
-
-      // 更新计数状态
-      const endAt = Date.now();
-      runtimeStore.search.searchPlan[solutionKey].count = newItems.length;
-      runtimeStore.search.searchPlan[solutionKey].endAt = endAt;
-      runtimeStore.search.searchPlan[solutionKey].costTime = endAt - startAt;
-
-      // 直接向 advanceItemPropsRef.site 添加 siteId，而不是重新构造全部字典，以便于站点快速选择器更新
-      const sites = advanceItemPropsRef.value.site;
-      if (Array.isArray(sites) && !sites.includes(siteId)) {
-        sites.push(siteId);
+      if (onComplete && callbackResult) {
+        try {
+          await onComplete(callbackResult);
+        } catch (error) {
+          console.error("Failed to forward agent site search result:", error);
+        }
       }
     },
     { priority: queuePriority, id: solutionKey },
@@ -272,59 +326,98 @@ export async function retrySearch(retryStatus: EResultParseStatus[] = defaultErr
 }
 
 /**
- * Elysium Agent 搜索：用 depiler 原有搜索流程执行，结果自动渲染 UI，完成后通知 background 发给 server。
+ * Elysium Agent 搜索：用 depiler 原有搜索流程执行，单站点完成后通知 background 发给 server。
  */
 export async function doAgentSearch(siteKeys: string[], keyword: string, requestId: string) {
+  const uniqueSiteKeys = [...new Set(siteKeys)];
+  agentSearchState = {
+    requestId,
+    siteKeys: uniqueSiteKeys,
+    sentSites: new Set<string>(),
+  };
   runtimeStore.resetSearchData();
   runtimeStore.search.searchKey = keyword;
   runtimeStore.search.searchPlanKey = "elysium_agent";
   runtimeStore.search.startAt = Date.now();
   runtimeStore.search.isSearching = true;
 
-  const allSites = siteKeys.map((siteId) => ({
+  const allSites = uniqueSiteKeys.map((siteId) => ({
     siteId: siteId as TSiteID,
     searchEntries: { default: { id: "default", merge: true } } as Record<string, IAdvanceKeywordSearchConfig>,
   }));
 
   for (const { siteId, searchEntries } of allSites) {
     for (const [searchEntryName, searchEntry] of Object.entries(searchEntries)) {
-      await doSearchEntity(siteId, searchEntryName, searchEntry);
+      await doSearchEntity(siteId, searchEntryName, searchEntry, false, async (result) => {
+        const currentAgentSearch = agentSearchState;
+        if (!currentAgentSearch || currentAgentSearch.requestId !== requestId) {
+          return;
+        }
+        await sendAgentSiteResult(requestId, result);
+        currentAgentSearch.sentSites.add(String(result.siteId));
+      });
     }
   }
+}
 
-  // idle 回调：全部完成后，按站点分组发结果给 server
-  agentSearchCallback = (allItems: ISearchResultTorrent[]) => {
-    const grouped = new Map<string, ISearchResultTorrent[]>();
-    for (const item of allItems) {
-      if (!grouped.has(item.site)) grouped.set(item.site, []);
-      grouped.get(item.site)!.push(item);
+async function finishAgentSearch(state: IAgentSearchState) {
+  for (const siteKey of state.siteKeys) {
+    if (state.sentSites.has(siteKey)) {
+      continue;
     }
-    for (const [siteKey, items] of grouped) {
-      const siteName = metadataStore.siteNameMap[siteKey] ?? siteKey;
-      const normalized = items.map((item) => ({
-        id: `${siteKey}:${item.id ?? item.url ?? item.title}`,
-        siteKey,
-        siteName,
-        siteFavicon: "",
-        title: item.title,
-        subTitle: item.subTitle,
-        freeStatus: item.tags?.map((t: any) => t.name).join(" / ") ?? "",
-        downloadState: item.status,
-        publishTimeText: item.time ? new Date(item.time).toLocaleString() : "",
-        sizeText: typeof item.size === "number" ? formatBytes(item.size) : "",
-        seeders: item.seeders,
-        leechers: item.leechers,
-        completed: item.completed,
-        detailUrl: item.url,
-        downloadUrl: item.link,
-      }));
-      sendMessage("forwardToServer", {
-        type: "siteResult",
-        requestId,
-        body: { siteKey, siteName, success: true, items: normalized, message: `搜索完成，${items.length} 条结果` },
-      } as any).catch(() => {});
-    }
-    sendMessage("forwardToServer", { type: "complete", requestId, body: { message: "done" } } as any).catch(() => {});
+    await sendAgentSiteResult(state.requestId, {
+      siteId: siteKey as TSiteID,
+      siteName: metadataStore.siteNameMap[siteKey] ?? siteKey,
+      searchStatus: EResultParseStatus.noResults,
+      searchStatusMsg: "未返回搜索结果",
+      items: [],
+    });
+  }
+  await sendMessage("forwardToServer", {
+    type: "complete",
+    requestId: state.requestId,
+    body: { message: "done" },
+  } as any);
+}
+
+async function sendAgentSiteResult(requestId: string, result: IAgentSearchSiteResult) {
+  const siteKey = String(result.siteId);
+  const siteName = result.siteName || metadataStore.siteNameMap[siteKey] || siteKey;
+  const success =
+    result.searchStatus === EResultParseStatus.success || result.searchStatus === EResultParseStatus.noResults;
+  const error = success ? "" : result.searchStatusMsg || `搜索状态异常: ${result.searchStatus}`;
+  const normalized = success ? result.items.map((item) => normalizeAgentTorrent(siteKey, siteName, item)) : [];
+  await sendMessage("forwardToServer", {
+    type: "siteResult",
+    requestId,
+    body: {
+      siteKey,
+      siteName,
+      success,
+      items: normalized,
+      message: success ? `搜索完成，${normalized.length} 条结果` : `搜索失败: ${error}`,
+      error,
+    },
+  } as any);
+}
+
+function normalizeAgentTorrent(siteKey: string, siteName: string, item: ISearchResultTorrent) {
+  return {
+    id: `${siteKey}:${item.id ?? item.url ?? item.title}`,
+    siteKey,
+    siteName,
+    siteFavicon: "",
+    title: item.title,
+    subTitle: item.subTitle,
+    freeStatus: item.tags?.map((tag: any) => tag.name).join(" / ") ?? "",
+    downloadState: item.status,
+    publishTimeText: item.time ? new Date(item.time).toLocaleString() : "",
+    sizeText: typeof item.size === "number" ? formatBytes(item.size) : "",
+    seeders: item.seeders,
+    leechers: item.leechers,
+    completed: item.completed,
+    detailUrl: item.url,
+    downloadUrl: item.link,
   };
 }
 
