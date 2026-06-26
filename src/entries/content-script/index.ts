@@ -9,8 +9,8 @@ import type { IConfigPiniaStorageSchema } from "@/shared/types/storages/config.t
 
 import { mountApp } from "./app/init.ts";
 
-sendMessage("getExtStorage", "config").then(async (data) => {
-  const configStore = data as IConfigPiniaStorageSchema;
+async function initContentScript() {
+  const configStore = (await sendMessage("getExtStorage", "config")) as IConfigPiniaStorageSchema | undefined;
 
   if (configStore?.contentScript?.enabled ?? true) {
     if (configStore?.contentScript?.enabledAtSocialSite ?? true) {
@@ -25,26 +25,26 @@ sendMessage("getExtStorage", "config").then(async (data) => {
       }
     }
 
-    sendMessage("getExtStorage", "metadata").then(async (data) => {
-      const metadataStore = data as IMetadataPiniaStorageSchema; // 假设 metadataStore 的类型是 any
+    const metadataStore = (await sendMessage("getExtStorage", "metadata")) as IMetadataPiniaStorageSchema | undefined;
+    const host = getHostFromUrl(window.location.href); // 获取当前页面的 host
+    const siteId = metadataStore?.siteHostMap?.[host];
 
-      const host = getHostFromUrl(window.location.href); // 获取当前页面的 host
-
-      if (metadataStore.siteHostMap[host]) {
-        // 如果当前页面的 host 在 metadataStore 中有对应的 siteId，加载 app
-        const siteId = metadataStore.siteHostMap[host];
-
-        if (
-          configStore?.contentScript?.allowExceptionSites === true &&
-          metadataStore.sites[siteId]?.allowContentScript === false
-        ) {
-          console.debug(`[PTD] Content script is disabled for site: ${siteId}`);
-          return; // 如果允许排除站点，且站点配置中禁用了 contentScript，则不加载应用
-        }
-
-        console.debug(`[PTD] host found for site: ${siteId}, loading app...`);
-        mountApp(document, { siteId });
+    if (siteId) {
+      // 如果当前页面的 host 在 metadataStore 中有对应的 siteId，加载 app
+      if (
+        configStore?.contentScript?.allowExceptionSites === true &&
+        metadataStore?.sites?.[siteId]?.allowContentScript === false
+      ) {
+        console.debug(`[PTD] Content script is disabled for site: ${siteId}`);
+        return; // 如果允许排除站点，且站点配置中禁用了 contentScript，则不加载应用
       }
-    });
+
+      console.debug(`[PTD] host found for site: ${siteId}, loading app...`);
+      mountApp(document, { siteId });
+    }
   }
+}
+
+initContentScript().catch((error) => {
+  console.warn("[PTD] Content script initialization skipped:", error);
 });
