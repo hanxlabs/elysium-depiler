@@ -143,6 +143,25 @@ export const siteMetadata: ISiteMetadata = {
       rows: {
         selector: "table.torrents > tbody > tr:has(table.torrentname)",
       },
+      subTitle: {
+        text: "",
+        selector: [
+          "a[href^='details.php?id='][title]:has(b)",
+          "a[href*='details.php?id='][href*='hit']",
+          "a[href*='hit'][title]",
+          "a[href*='hit']:has(b)",
+        ],
+        // HDArea places the subtitle in a sibling div of the title div,
+        // rather than after a <br> tag, so we look at the next sibling element.
+        elementProcess: (element: HTMLElement) => {
+          const titleDiv = element.closest("td > div");
+          const subtitleEl = titleDiv?.nextElementSibling;
+          if (subtitleEl instanceof HTMLElement && subtitleEl.tagName === "DIV") {
+            return subtitleEl.textContent?.trim() ?? "";
+          }
+          return "";
+        },
+      },
       tags: [
         ...SchemaMetadata.search!.selectors!.tags!,
         { name: "首发", selector: "img.first_publish", color: "#3887D7" },

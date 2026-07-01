@@ -17,6 +17,21 @@ export const siteMetadata: ISiteMetadata = {
 
   officialGroupPattern: [/(-HDVWEB|-HDVMV)/i],
 
+  userInfo: {
+    ...SchemaMetadata.userInfo!,
+    selectors: {
+      ...SchemaMetadata.userInfo!.selectors!,
+      bonus: {
+        selector: [
+          "#top-stats-bar a.top-stat[href*='mybonus.php'] b",
+          ".top-account-stat-link.top-account-stat-bonus b",
+          ".rowhead:contains('电影票') + td",
+        ],
+        filters: [{ name: "parseNumber" }],
+      },
+    },
+  },
+
   levelRequirements: [
     {
       id: 0,
