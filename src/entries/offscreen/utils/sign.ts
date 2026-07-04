@@ -63,7 +63,7 @@ async function signWithFetch(siteKey: string, signUrl: string): Promise<SignResu
       };
     }
 
-    const signResult = parseSignResult(text);
+    const signResult = parseSignResult(text, siteKey);
     return {
       success: signResult.success,
       wafBlocked: false,
@@ -82,16 +82,161 @@ async function signWithFetch(siteKey: string, signUrl: string): Promise<SignResu
   }
 }
 
+async function signLuckpt(signUrl: string): Promise<SignResult> {
+  const firstResponse = await fetchLuckptPage(signUrl, "GET", signUrl);
+  if (!firstResponse.success || firstResponse.wafBlocked) {
+    return firstResponse;
+  }
+
+  const firstResult = parseSignResult(firstResponse.bodyPreview, "luckpt");
+  if (firstResult.success) {
+    return {
+      ...firstResponse,
+      bodyPreview: firstResponse.bodyPreview.slice(0, 500),
+      message: firstResult.message,
+    };
+  }
+
+  const form = parseLuckptAttendanceForm(firstResponse.bodyPreview, signUrl);
+  if (!form) {
+    return {
+      ...firstResponse,
+      bodyPreview: firstResponse.bodyPreview.slice(0, 500),
+      success: false,
+      message: "LuckPT签到未完成：未找到立即签到表单",
+    };
+  }
+
+  const postResponse = await fetchLuckptPage(form.actionUrl, "POST", signUrl, form.params);
+  if (!postResponse.success || postResponse.wafBlocked) {
+    return postResponse;
+  }
+
+  const postResult = parseSignResult(postResponse.bodyPreview, "luckpt");
+  return {
+    ...postResponse,
+    bodyPreview: postResponse.bodyPreview.slice(0, 500),
+    success: postResult.success,
+    message: postResult.message,
+  };
+}
+
+async function fetchLuckptPage(
+  url: string,
+  method: "GET" | "POST",
+  referer: string,
+  params?: URLSearchParams,
+): Promise<SignResult> {
+  try {
+    const response = await fetch(url, {
+      method,
+      credentials: "include",
+      headers: {
+        "User-Agent": navigator.userAgent,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": navigator.language || "zh-CN,zh;q=0.9,en;q=0.8",
+        Referer: referer,
+        ...(method === "GET" ? { "Upgrade-Insecure-Requests": "1" } : { Origin: new URL(url).origin }),
+      },
+      body: method === "POST" ? (params ?? new URLSearchParams()) : undefined,
+    });
+    const text = await response.text();
+
+    if (isWafBlockPage(text)) {
+      logger({ msg: `[sign] LuckPT fetch hit WAF block page: ${url}` });
+      return {
+        success: false,
+        wafBlocked: true,
+        statusCode: response.status,
+        bodyPreview: text,
+        message: `签到被WAF拦截（雷池），HTTP ${response.status}`,
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        success: false,
+        wafBlocked: false,
+        statusCode: response.status,
+        bodyPreview: text,
+        message: `签到请求失败: HTTP ${response.status}`,
+      };
+    }
+
+    return {
+      success: true,
+      wafBlocked: false,
+      statusCode: response.status,
+      bodyPreview: text,
+      message: "LuckPT签到页面请求完成",
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      wafBlocked: false,
+      statusCode: 0,
+      bodyPreview: "",
+      message: `签到请求异常: ${error?.message ?? String(error)}`,
+    };
+  }
+}
+
+function parseLuckptAttendanceForm(
+  html: string,
+  signUrl: string,
+): { actionUrl: string; params: URLSearchParams } | null {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const forms = Array.from(doc.querySelectorAll("form"));
+  const form = forms.find((candidate) => {
+    const method = (candidate.getAttribute("method") || "get").toLowerCase();
+    const action = candidate.getAttribute("action") || "";
+    const hasSubmit = Array.from(candidate.querySelectorAll("input")).some(
+      (input) => input.getAttribute("value") === "立即签到",
+    );
+    return method === "post" && (!action || action.includes("attendance.php")) && hasSubmit;
+  });
+  if (!form) {
+    return null;
+  }
+
+  const params = new URLSearchParams();
+  for (const input of Array.from(form.querySelectorAll("input[name]")) as HTMLInputElement[]) {
+    const type = (input.getAttribute("type") || "text").toLowerCase();
+    if (["submit", "button", "image", "file"].includes(type)) {
+      continue;
+    }
+    if ((type === "checkbox" || type === "radio") && !input.checked) {
+      continue;
+    }
+    params.set(input.name, input.value || "");
+  }
+  for (const textarea of Array.from(form.querySelectorAll("textarea[name]")) as HTMLTextAreaElement[]) {
+    params.set(textarea.name, textarea.value || "");
+  }
+  for (const select of Array.from(form.querySelectorAll("select[name]")) as HTMLSelectElement[]) {
+    params.set(select.name, select.value || "");
+  }
+
+  return {
+    actionUrl: new URL(form.getAttribute("action") || signUrl, signUrl).toString(),
+    params,
+  };
+}
+
 /**
  * 解析签到结果 HTML，判断签到成功/失败/已签到
  */
-function parseSignResult(html: string): { success: boolean; message: string } {
+function parseSignResult(html: string, siteKey?: string): { success: boolean; message: string } {
   const jsonResult = parseJsonSignResult(html);
   if (jsonResult) {
     return jsonResult;
   }
 
   const text = html.toLowerCase();
+  const normalizedSiteKey = siteKey?.toLowerCase();
+  if (normalizedSiteKey === "luckpt" && isLuckptAttendanceSubmitPage(html)) {
+    return { success: false, message: "LuckPT签到未完成：仍停留在立即签到入口页" };
+  }
 
   // 签到成功关键字
   const successPatterns = [
@@ -105,6 +250,7 @@ function parseSignResult(html: string): { success: boolean; message: string } {
     /签到奖励/,
     /连续签到/,
     /获得.*魔力/,
+    /获得.*幸运星/,
     /获得.*积分/,
     /获得.*金币/,
     /获得.*bonus/,
@@ -150,7 +296,23 @@ function parseSignResult(html: string): { success: boolean; message: string } {
     }
   }
 
+  if (normalizedSiteKey === "luckpt") {
+    return { success: false, message: "LuckPT签到未完成：未识别到签到成功结果" };
+  }
+
   return { success: true, message: "签到请求已完成（未能识别具体结果）" };
+}
+
+function isLuckptAttendanceSubmitPage(html: string): boolean {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return Array.from(doc.querySelectorAll("form")).some((form) => {
+    const method = (form.getAttribute("method") || "get").toLowerCase();
+    const action = form.getAttribute("action") || "";
+    const hasSubmit = Array.from(form.querySelectorAll("input")).some(
+      (input) => input.getAttribute("value") === "立即签到",
+    );
+    return method === "post" && (!action || action.includes("attendance.php")) && hasSubmit;
+  });
 }
 
 function parseJsonSignResult(text: string): { success: boolean; message: string } | null {
@@ -185,6 +347,9 @@ function resolveSignUrl(siteKey: string, signUrl: string): string {
 async function doSiteSign(siteKey: string, signUrl: string): Promise<SignResult> {
   const resolvedSignUrl = resolveSignUrl(siteKey, signUrl);
   logger({ msg: `[sign] doSiteSign: ${siteKey}, url: ${resolvedSignUrl}` });
+  if (siteKey.toLowerCase() === "luckpt") {
+    return await signLuckpt(resolvedSignUrl);
+  }
   return await signWithFetch(siteKey, resolvedSignUrl);
 }
 
