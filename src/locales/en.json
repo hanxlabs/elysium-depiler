@@ -1038,6 +1038,9 @@
       "title": "Customize batch actions for {0} torrents"
     },
     "SocialSiteParseResultsDialog": {
+      "defaultSeasonTitle": "Season",
+      "searchEntryTitle": "Search {title}",
+      "searchPlan": "Search Plan",
       "searchExternalId": "Search External ID",
       "searchId": "Search ID",
       "searchTitle": "Search Title",
