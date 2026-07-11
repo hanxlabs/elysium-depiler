@@ -135,10 +135,13 @@ export default defineConfig({
         "{{firefox}}.content_security_policy": {
           extension_pages: "script-src 'self';",
         },
+        "{{chrome}}.content_security_policy": {
+          extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
+        },
 
         web_accessible_resources: [
           {
-            resources: ["icons/*", "lib/*", "pt-depiler.css"],
+            resources: ["icons/*", "lib/*", "ocr/*", "pt-depiler.css"],
             matches: ["*://*/*"],
           },
         ],
@@ -208,6 +211,7 @@ export default defineConfig({
     }),
   ],
   resolve: {
+    conditions: ["onnxruntime-web-use-extern-wasm", "import", "module", "browser", "default"],
     alias: {
       "~": base_path("./src"),
       "@": base_path("./src/entries"),
