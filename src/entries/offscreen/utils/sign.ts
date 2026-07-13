@@ -293,8 +293,14 @@ function parseStrictCaptchaSignResult(html: string, siteKey: string): { success:
   if (/请先登录|需要登录|未登录|登录.*过期|not\s*logged\s*in|please\s*login/i.test(text)) {
     return { success: false, message: `${siteKey}签到失败：登录状态失效` };
   }
-  if (/签到成功|今日已签到|已经签到|您已签到|签到已得|签到获得|连续签到|获得.*(?:魔力|积分|金币|bonus)/i.test(text)) {
-    return { success: true, message: `${siteKey}签到成功` };
+  const summary = summarizeSignResult(text);
+  if (
+    summary ||
+    /签到成功|簽到成功|今日已签到|今日已簽到|已经签到|已經簽到|您已签到|您已簽到|签到已得|簽到已得|签到获得|簽到獲得|连续签到|連續簽到|获得.*(?:魔力|积分|金币|猫粮|bonus)|獲得.*(?:魔力|積分|金幣|貓糧|bonus)/i.test(
+      text,
+    )
+  ) {
+    return { success: true, message: summary || `${siteKey}签到成功` };
   }
   if (parseCaptchaForm(html, location.href)) {
     return { success: false, message: `${siteKey}签到未完成：仍停留在验证码页面` };
@@ -436,7 +442,8 @@ function parseSignResult(html: string, siteKey?: string): { success: boolean; me
     return jsonResult;
   }
 
-  const text = html.toLowerCase();
+  const rawText = htmlToText(html);
+  const text = rawText.toLowerCase();
   const normalizedSiteKey = siteKey?.toLowerCase();
   if (normalizedSiteKey === "luckpt" && isLuckptAttendanceSubmitPage(html)) {
     return { success: false, message: "LuckPT签到未完成：仍停留在立即签到入口页" };
@@ -445,19 +452,35 @@ function parseSignResult(html: string, siteKey?: string): { success: boolean; me
   // 签到成功关键字
   const successPatterns = [
     /签到成功/,
+    /簽到成功/,
     /已签到/,
+    /已簽到/,
     /今日已签到/,
+    /今日已簽到/,
     /已经签到/,
+    /已經簽到/,
     /您已签到/,
+    /您已簽到/,
     /签到完成/,
+    /簽到完成/,
     /签到获得/,
+    /簽到獲得/,
     /签到奖励/,
+    /簽到獎勵/,
     /连续签到/,
+    /連續簽到/,
     /获得.*魔力/,
+    /獲得.*魔力/,
     /获得.*幸运星/,
+    /獲得.*幸運星/,
     /获得.*积分/,
+    /獲得.*積分/,
     /获得.*金币/,
+    /獲得.*金幣/,
+    /获得.*猫粮/,
+    /獲得.*貓糧/,
     /获得.*bonus/,
+    /獲得.*bonus/,
     /sign\s*in\s*success/i,
     /signed\s*successfully/i,
     /already\s*signed/i,
@@ -465,6 +488,7 @@ function parseSignResult(html: string, siteKey?: string): { success: boolean; me
     /checkin\s*success/i,
     /check\s*in\s*success/i,
     /签到.*成功/,
+    /簽到.*成功/,
   ];
 
   // 签到失败关键字
@@ -496,7 +520,7 @@ function parseSignResult(html: string, siteKey?: string): { success: boolean; me
 
   for (const pattern of successPatterns) {
     if (pattern.test(text)) {
-      return { success: true, message: "签到成功" };
+      return { success: true, message: summarizeSignResult(rawText) || "签到成功" };
     }
   }
 
@@ -527,13 +551,94 @@ function parseJsonSignResult(text: string): { success: boolean; message: string 
   try {
     const json = JSON.parse(trimmed);
     const message = [json.data, json.message].filter(Boolean).join(" ");
+    const summary = summarizeSignResult(message);
+    const status = String(json.status ?? json.code ?? "").toLowerCase();
+    const success =
+      json.success === true ||
+      status === "1" ||
+      status === "true" ||
+      /今日已签到|今日已簽到|已签到|已簽到|签到成功|簽到成功|连续签到|連續簽到|获得.*(?:猫粮|貓糧|魔力|积分|積分)|獲得.*(?:猫粮|貓糧|魔力|积分|積分)/.test(
+        htmlToText(message),
+      );
     return {
-      success: json.status === "1" || /今日已签到|已签到|签到成功|连续签到|获得.*猫粮/.test(message),
-      message: message || "签到请求已完成",
+      success,
+      message: summary || cleanSignMessage(message) || "签到请求已完成",
     };
   } catch {
     return null;
   }
+}
+
+function htmlToText(html: string): string {
+  const doc = new DOMParser().parseFromString(html || "", "text/html");
+  return normalizeText(doc.body?.textContent || html || "");
+}
+
+function cleanSignMessage(message: string): string {
+  return htmlToText(message).slice(0, 120);
+}
+
+function summarizeSignResult(input: string): string | null {
+  const text = htmlToText(input);
+  if (!text) {
+    return null;
+  }
+
+  const totalCount = firstGroup(text, /第\s*([\d,]+)\s*次(?:签到|簽到)/);
+  const consecutiveDays = firstGroup(text, /(?:连续|連續)(?:签到|簽到)\s*([\d,]+)\s*天/);
+  const bonus = firstValueWithUnit(
+    text,
+    /(?:本次(?:签到|簽到)?(?:获得|獲得)|(?:获得|獲得))\s*([\d,]+(?:\.\d+)?)\s*(克(?:猫粮|貓糧)|个魔力值|個魔力值|个幸运星|個幸運星|积分|積分|金币|金幣|bonus)/i,
+  );
+  const rankMatch = /今日(?:签到|簽到)排名[：:]?\s*([\d,]+)\s*[/|]\s*([\d,]+)/.exec(text);
+  const rank = rankMatch ? `${rankMatch[1].replace(/,/g, "")}/${rankMatch[2].replace(/,/g, "")}` : null;
+
+  const parts: string[] = [];
+  if (totalCount) {
+    parts.push(`第${totalCount}次`);
+  }
+  if (consecutiveDays) {
+    parts.push(`连续${consecutiveDays}天`);
+  }
+  if (bonus) {
+    parts.push(`本次获得${bonus}`);
+  }
+  if (rank) {
+    parts.push(`排名${rank}`);
+  }
+
+  if (parts.length > 0) {
+    return `签到成功（${parts.join("，")}）`;
+  }
+
+  const headerBonus = firstGroup(text, /(?:签到|簽到)已得\s*([\d,]+(?:\.\d+)?)/);
+  if (headerBonus) {
+    return `签到成功（已得${headerBonus}）`;
+  }
+  return null;
+}
+
+function firstGroup(text: string, pattern: RegExp): string | null {
+  const match = pattern.exec(text);
+  if (!match) {
+    return null;
+  }
+  return match[1].replace(/,/g, "");
+}
+
+function firstValueWithUnit(text: string, pattern: RegExp): string | null {
+  const match = pattern.exec(text);
+  if (!match) {
+    return null;
+  }
+  return `${match[1].replace(/,/g, "")}${match[2]}`;
+}
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function resolveSignUrl(siteKey: string, signUrl: string): string {
