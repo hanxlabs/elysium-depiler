@@ -76,6 +76,7 @@
     "editSavePath": "修改保存路径",
     "emptyNotice": "暂无辅种任务，请在搜索结果页面选择种子后点击辅种检测按钮",
     "leechers": "下载：",
+    "qBittorrentLegacyFails": "qBittorrent 拒绝添加，但旧版 Web API 未返回具体原因；请检查是否已有相同种子、保存路径或分类是否有效，并查看 qBittorrent 日志",
     "savePath": "保存路径：",
     "seeders": "上传：",
     "sendAllTorrents": "发送所有种子",
@@ -84,6 +85,7 @@
     "sendError": "发送失败",
     "sendOtherTorrents": "发送其他种子",
     "sendSingleError": "发送失败",
+    "sendSingleErrorWithReason": "发送失败：{reason}",
     "sendSingleSuccess": "发送成功",
     "sendSuccess": "发送成功",
     "setAsBaseTorrent": "设为基准种子",
@@ -405,6 +407,15 @@
     "title": "为 {0} 个种子选择下载器"
   },
   "SetBackup": {
+    "fields": {
+      "config": "插件配置（config）",
+      "cookies": "站点 Cookies（cookies）",
+      "downloadHistory": "下载历史（downloadHistory）",
+      "keepUploadTask": "辅种任务（keepUploadTask）",
+      "metadata": "站点与服务配置（metadata）",
+      "searchResultSnapshot": "搜索结果快照（searchResultSnapshot）",
+      "userInfo": "用户信息（userInfo）"
+    },
     "AddDialog": {
       "title": "添加备份服务器"
     },
