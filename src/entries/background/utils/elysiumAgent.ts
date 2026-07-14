@@ -425,9 +425,9 @@ async function signSite(site: AgentSite) {
     throw new Error("站点签到URL为空");
   }
 
-  // piggo: 直接跳转新标签页，不经过 fetch
-  if (isPiggo(site)) {
-    console.log(`[elysiumAgent] piggo detected, opening new tab directly: ${site.signUrl}`);
+  // piggo/audiences: 直接跳转新标签页，不经过 fetch
+  if (shouldOpenSignInTabDirectly(site)) {
+    console.log(`[elysiumAgent] opening sign tab directly for ${site.siteKey}: ${site.signUrl}`);
     openTabAndAutoClose(site.signUrl);
     return {
       message: `已在新标签页打开签到页面: ${site.siteName || site.siteKey}`,
@@ -510,8 +510,8 @@ function isHddolby(site: AgentSite): boolean {
   return /hddolby/i.test(site.siteKey);
 }
 
-function isPiggo(site: AgentSite): boolean {
-  return /piggo/i.test(site.siteKey);
+function shouldOpenSignInTabDirectly(site: AgentSite): boolean {
+  return /^(piggo|audiences)$/i.test(site.siteKey);
 }
 
 /**
