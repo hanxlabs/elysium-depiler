@@ -55,6 +55,17 @@ interface IAgentSearchState {
   requestId: string;
   siteKeys: string[];
   sentSites: Set<string>;
+  aggregations: Record<
+    string,
+    {
+      expected: number;
+      completed: number;
+      items: ISearchResultTorrent[];
+      errors: string[];
+      hasSuccess: boolean;
+      hasNoResults: boolean;
+    }
+  >;
 }
 
 let agentSearchState: IAgentSearchState | null = null;
@@ -328,12 +339,19 @@ export async function retrySearch(retryStatus: EResultParseStatus[] = defaultErr
 /**
  * Elysium Agent 搜索：用 depiler 原有搜索流程执行，单站点完成后通知 background 发给 server。
  */
-export async function doAgentSearch(siteKeys: string[], keyword: string, requestId: string) {
+export async function doAgentSearch(
+  siteKeys: string[],
+  keyword: string,
+  requestId: string,
+  siteSearchEntries: Record<string, Record<string, IAdvanceKeywordSearchConfig>> = {},
+) {
   const uniqueSiteKeys = [...new Set(siteKeys)];
+  const aggregations: IAgentSearchState["aggregations"] = {};
   agentSearchState = {
     requestId,
     siteKeys: uniqueSiteKeys,
     sentSites: new Set<string>(),
+    aggregations,
   };
   runtimeStore.resetSearchData();
   runtimeStore.search.searchKey = keyword;
@@ -343,18 +361,57 @@ export async function doAgentSearch(siteKeys: string[], keyword: string, request
 
   const allSites = uniqueSiteKeys.map((siteId) => ({
     siteId: siteId as TSiteID,
-    searchEntries: { default: { id: "default", merge: true } } as Record<string, IAdvanceKeywordSearchConfig>,
+    searchEntries: Object.keys(siteSearchEntries[siteId] ?? {}).length
+      ? siteSearchEntries[siteId]
+      : ({ default: { id: "default", merge: true } } as Record<string, IAdvanceKeywordSearchConfig>),
   }));
 
   for (const { siteId, searchEntries } of allSites) {
+    aggregations[String(siteId)] = {
+      expected: Math.max(1, Object.keys(searchEntries).length),
+      completed: 0,
+      items: [],
+      errors: [],
+      hasSuccess: false,
+      hasNoResults: false,
+    };
     for (const [searchEntryName, searchEntry] of Object.entries(searchEntries)) {
       await doSearchEntity(siteId, searchEntryName, searchEntry, false, async (result) => {
         const currentAgentSearch = agentSearchState;
         if (!currentAgentSearch || currentAgentSearch.requestId !== requestId) {
           return;
         }
-        await sendAgentSiteResult(requestId, result);
-        currentAgentSearch.sentSites.add(String(result.siteId));
+        const siteKey = String(result.siteId);
+        const aggregation = currentAgentSearch.aggregations[siteKey];
+        if (!aggregation || currentAgentSearch.sentSites.has(siteKey)) {
+          return;
+        }
+        aggregation.completed += 1;
+        if (result.searchStatus === EResultParseStatus.success) {
+          aggregation.hasSuccess = true;
+        } else if (result.searchStatus === EResultParseStatus.noResults) {
+          aggregation.hasNoResults = true;
+        } else {
+          aggregation.errors.push(result.searchStatusMsg || `搜索状态异常: ${result.searchStatus}`);
+        }
+        aggregation.items.push(...result.items);
+
+        if (aggregation.completed >= aggregation.expected) {
+          const hasUsableResult = aggregation.hasSuccess || aggregation.hasNoResults;
+          const searchStatus = hasUsableResult
+            ? aggregation.items.length > 0
+              ? EResultParseStatus.success
+              : EResultParseStatus.noResults
+            : EResultParseStatus.unknownError;
+          await sendAgentSiteResult(requestId, {
+            siteId: siteId as TSiteID,
+            siteName: metadataStore.siteNameMap[siteKey] ?? siteKey,
+            searchStatus,
+            searchStatusMsg: aggregation.errors.join("；") || undefined,
+            items: aggregation.items,
+          });
+          currentAgentSearch.sentSites.add(siteKey);
+        }
       });
     }
   }

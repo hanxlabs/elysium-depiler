@@ -23,14 +23,14 @@ const router = useRouter();
 
 // ====== Elysium Agent 搜索：复用 depiler 原有搜索流程 ======
 onMessage("triggerAgentSearch", async ({ data }) => {
-  const { requestId, siteKeys, keyword } = data;
+  const { requestId, siteKeys, keyword, siteSearchEntries } = data;
 
   // 自动导航到搜索页面
   router.push({ name: "SearchEntity" });
 
   // 动态 import，避免模块提前加载导致 Pinia 未初始化
   const { doAgentSearch } = await import("@/options/views/Overview/SearchEntity/utils/search.ts");
-  doAgentSearch(siteKeys, keyword, requestId);
+  doAgentSearch(siteKeys, keyword, requestId, siteSearchEntries);
 });
 
 watch(

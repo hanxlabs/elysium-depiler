@@ -192,6 +192,7 @@ interface ProtocolMap extends TMessageMap {
     siteKeys: string[];
     keyword: string;
     siteCookies?: Record<string, string>;
+    siteSearchEntries?: Record<string, Record<string, any>>;
   }): void;
 
   // 2.12 options → background 转发消息到 server WebSocket

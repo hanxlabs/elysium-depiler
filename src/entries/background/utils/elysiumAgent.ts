@@ -31,6 +31,7 @@ interface AgentCommand {
     keyword?: string;
     concurrency?: number; // 并发数，默认 2
     siteCookies?: Record<string, string>; // server 端传来的站点 Cookie（备用，浏览器无 Cookie 时使用）
+    siteSearchEntries?: Record<string, Record<string, any>>; // server 端展开后的 depiler 搜索入口
   };
 }
 
@@ -316,6 +317,7 @@ async function triggerDepilerSearch(command: AgentCommand) {
   const keyword = (command.body?.keyword ?? "").trim();
   const siteKeys: string[] = command.body?.siteKeys ?? [];
   const siteCookiesFromServer: Record<string, string> = command.body?.siteCookies ?? {};
+  const siteSearchEntries: Record<string, Record<string, any>> = command.body?.siteSearchEntries ?? {};
 
   if (!keyword) {
     sendToServer({ type: "error", requestId, body: { message: "搜索关键词为空" } });
@@ -345,8 +347,13 @@ async function triggerDepilerSearch(command: AgentCommand) {
   }
 
   // 2. 通知 options 页面触发 depiler 原有搜索（结果自动渲染 UI + 发回 server）
-  console.log("[elysiumAgent] triggerDepilerSearch: delegating to options", { requestId, keyword, siteKeys });
-  sendMessage("triggerAgentSearch", { requestId, siteKeys, keyword } as any).catch((err) => {
+  console.log("[elysiumAgent] triggerDepilerSearch: delegating to options", {
+    requestId,
+    keyword,
+    siteKeys,
+    siteSearchEntries,
+  });
+  sendMessage("triggerAgentSearch", { requestId, siteKeys, keyword, siteSearchEntries } as any).catch((err) => {
     sendToServer({ type: "error", requestId, body: { message: `无法触发 Depiler 搜索: ${err?.message ?? err}` } });
   });
 }
