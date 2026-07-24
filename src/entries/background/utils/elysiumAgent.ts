@@ -41,6 +41,8 @@ interface AgentSite {
   siteUrl?: string;
   signUrl?: string;
   twoFactorSecret?: string;
+  // 仅由服务端单次下发，不能写入 Depiler 本地站点配置。
+  bearerToken?: string;
 }
 
 interface LoginResult {
@@ -453,12 +455,14 @@ async function signSite(site: AgentSite) {
   const signResult = (await sendMessage("doSiteSign", {
     siteKey: site.siteKey,
     signUrl: site.signUrl,
+    bearerToken: site.bearerToken,
   })) as {
     success: boolean;
     wafBlocked: boolean;
     statusCode: number;
     bodyPreview: string;
     message: string;
+    bearerToken?: string;
   };
 
   // 遇到 WAF 拦截：打开新标签页让浏览器完成 WAF JS 挑战，直接标记成功
@@ -473,7 +477,7 @@ async function signSite(site: AgentSite) {
         wafBlocked: true,
         openedInNewTab: true,
       },
-      credential: await buildCredential(site),
+      credential: await buildCredential(site, site.bearerToken),
     };
   }
 
@@ -483,7 +487,7 @@ async function signSite(site: AgentSite) {
   return {
     message: signResult.message,
     raw: { status: signResult.statusCode, bodyPreview: signResult.bodyPreview, wafBlocked: signResult.wafBlocked },
-    credential: await buildCredential(site),
+    credential: await buildCredential(site, signResult.bearerToken ?? site.bearerToken),
   };
 }
 
@@ -693,11 +697,12 @@ function parseHddolbyTwoFactorForm(
   return { actionUrl, method, codeField, params };
 }
 
-async function buildCredential(site: AgentSite) {
+async function buildCredential(site: AgentSite, bearerToken?: string) {
   const cookie = site.siteUrl ? await getCookieString(site.siteUrl) : "";
   return {
     cookie,
     headers: buildBrowserHeaders(site.siteUrl ?? ""),
+    ...(bearerToken ? { bearerToken } : {}),
   };
 }
 

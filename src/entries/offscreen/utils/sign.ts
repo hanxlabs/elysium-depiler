@@ -5,6 +5,7 @@ import { logger } from "./logger.ts";
 interface SignRequest {
   siteKey: string;
   signUrl: string;
+  bearerToken?: string;
 }
 
 interface SignResult {
@@ -13,6 +14,7 @@ interface SignResult {
   statusCode: number;
   bodyPreview: string;
   message: string;
+  bearerToken?: string;
 }
 
 interface CaptchaForm {
@@ -92,6 +94,49 @@ async function signWithFetch(siteKey: string, signUrl: string): Promise<SignResu
       bodyPreview: "",
       message: `签到请求异常: ${error?.message ?? String(error)}`,
     };
+  }
+}
+
+/** SunnyPT 的签到不使用浏览器 Cookie，而是站点配置中的短期 Bearer Token。 */
+async function signSunnyPt(bearerToken?: string): Promise<SignResult> {
+  try {
+    if (!bearerToken) {
+      return signFailure(0, "SunnyPT 账号拓展参数未配置 bearerToken", "");
+    }
+    const response = await fetch("https://api.sunnypt.top/api/v1/attendance/check-in", {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        Authorization: `Bearer ${bearerToken}`,
+        Origin: "https://sunnypt.top",
+        Referer: "https://sunnypt.top/",
+      },
+    });
+    const body = (await response.json()) as { code?: number; data?: { points?: number; days?: number }; msg?: string };
+    if (response.status >= 200 && response.status < 300 && body.code === 0) {
+      const points = body.data?.points;
+      const days = body.data?.days;
+      const detail = [points === undefined ? "" : `获得 ${points} 积分`, days === undefined ? "" : `连续 ${days} 天`]
+        .filter(Boolean)
+        .join("，");
+      const refreshedBearerToken =
+        body.data && typeof body.data === "object"
+          ? String(
+              (body.data as any).bearer_token || (body.data as any).bearerToken || (body.data as any).token || "",
+            ).trim()
+          : "";
+      return {
+        ...signSuccess(
+          response.status,
+          detail ? `SunnyPT 签到成功（${detail}）` : "SunnyPT 签到成功",
+          JSON.stringify(body),
+        ),
+        bearerToken: refreshedBearerToken || bearerToken,
+      };
+    }
+    return signFailure(response.status, body.msg || `SunnyPT 签到失败: HTTP ${response.status}`, JSON.stringify(body));
+  } catch (error: any) {
+    return signFailure(0, `SunnyPT 签到异常: ${error?.message ?? String(error)}`, "");
   }
 }
 
@@ -653,7 +698,7 @@ function resolveSignUrl(siteKey: string, signUrl: string): string {
  * 策略：通过 fetch 快速尝试，遇到 WAF 拦截时直接返回 wafBlocked 标志，
  * 由 background 层负责打开新标签页处理 WAF。
  */
-async function doSiteSign(siteKey: string, signUrl: string): Promise<SignResult> {
+async function doSiteSign(siteKey: string, signUrl: string, bearerToken?: string): Promise<SignResult> {
   const resolvedSignUrl = resolveSignUrl(siteKey, signUrl);
   logger({ msg: `[sign] doSiteSign: ${siteKey}, url: ${resolvedSignUrl}` });
   if (siteKey.toLowerCase() === "luckpt") {
@@ -662,9 +707,12 @@ async function doSiteSign(siteKey: string, signUrl: string): Promise<SignResult>
   if (siteKey.toLowerCase() === "vclib") {
     return await signWithLocalCaptcha(siteKey, resolvedSignUrl);
   }
+  if (siteKey.toLowerCase() === "sunnypt") {
+    return await signSunnyPt(bearerToken);
+  }
   return await signWithFetch(siteKey, resolvedSignUrl);
 }
 
 onMessage("doSiteSign", async ({ data }: { data: SignRequest }) => {
-  return await doSiteSign(data.siteKey, data.signUrl);
+  return await doSiteSign(data.siteKey, data.signUrl, data.bearerToken);
 });
