@@ -307,11 +307,17 @@ function isLoginSuccess(finalUrl: string, html: string, expectedOrigin: string):
   } catch {
     return false;
   }
-  if (url.origin !== expectedOrigin || !["/", "/index.php"].includes(url.pathname)) {
+  if (url.origin !== expectedOrigin) {
     return false;
   }
   const doc = new DOMParser().parseFromString(html, "text/html");
-  return !!doc.querySelector('a[href="logout.php"], a[href$="/logout.php"]');
+  const path = url.pathname.replace(/\/+$/, "");
+  const isIndexPage = ["", "/index.php"].includes(path) || doc.title.includes("首页");
+  const pageText = doc.body?.textContent || "";
+  const hasAuthenticatedMarker =
+    !!doc.querySelector('a[href*="logout.php"]') ||
+    (pageText.includes("欢迎回来") && !!doc.querySelector('a[href*="userdetails.php"]'));
+  return isIndexPage && hasAuthenticatedMarker;
 }
 
 function resolveBtschoolOrigin(siteUrl?: string): string {
