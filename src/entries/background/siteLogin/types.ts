@@ -13,7 +13,11 @@ export interface SiteLoginTarget {
 
 export interface SiteLoginResult {
   message: string;
-  credential: Record<string, string>;
+  credential: {
+    bearerToken?: string;
+    cookie?: string;
+    headers?: Record<string, string>;
+  };
   raw?: Record<string, unknown>;
 }
 

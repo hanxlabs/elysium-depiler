@@ -1,7 +1,8 @@
+import { btschoolLoginAdapter } from "./btschool.ts";
 import { sunnyPtLoginAdapter } from "./sunnypt.ts";
 import type { SiteLoginAdapter, SiteLoginResult, SiteLoginTarget } from "./types.ts";
 
-const adapters: SiteLoginAdapter[] = [sunnyPtLoginAdapter];
+const adapters: SiteLoginAdapter[] = [sunnyPtLoginAdapter, btschoolLoginAdapter];
 
 export async function loginSite(site: SiteLoginTarget): Promise<SiteLoginResult> {
   const adapter = adapters.find((candidate) => candidate.supports(site));

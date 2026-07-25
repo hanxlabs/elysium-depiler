@@ -10,3 +10,4 @@ import "./utils/socialInformation.ts";
 import "./utils/socialRecommendations.ts";
 import "./utils/keepUploadTask.ts";
 import "./utils/sign.ts";
+import "./utils/siteLogin.ts";
