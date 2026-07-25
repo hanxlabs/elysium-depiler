@@ -3,6 +3,24 @@ import { sendMessage } from "@/messages.ts";
 import { setupOffscreenDocument } from "../utils/offscreen.ts";
 import type { SiteLoginAdapter, SiteLoginResult, SiteLoginTarget } from "./types.ts";
 
+interface BtschoolPageDiagnostic {
+  stage: string;
+  status: number;
+  finalUrl: string;
+  redirected: boolean;
+  headers: Record<string, string>;
+  title: string;
+  htmlLength: number;
+  cloudflare: {
+    detected: boolean;
+    mitigated: string;
+    ray: string;
+    server: string;
+    challengeMarkers: string[];
+  };
+  html: string;
+}
+
 export const btschoolLoginAdapter: SiteLoginAdapter = {
   supports(site) {
     return site.siteKey.trim().toLowerCase() === "btschool";
@@ -20,7 +38,25 @@ export const btschoolLoginAdapter: SiteLoginAdapter = {
       siteUrl: origin,
       username,
       password,
-    })) as { message?: string; raw?: Record<string, unknown> };
+    })) as {
+      success: boolean;
+      message?: string;
+      raw?: Record<string, unknown>;
+      diagnostic?: BtschoolPageDiagnostic;
+    };
+    if (!result.success) {
+      console.error(
+        "[BTSCHOOL登录诊断] Offscreen返回的失败页面",
+        result.diagnostic ?? {
+          message: result.message,
+          diagnostic: "未获取到页面诊断信息，失败可能发生在请求页面之前",
+        },
+      );
+      if (result.diagnostic?.html) {
+        console.error(`[BTSCHOOL登录诊断] 脱敏后的完整HTML\n${result.diagnostic.html}`);
+      }
+      throw new Error(result.message || "BTSCHOOL 自动登录失败");
+    }
 
     const cookies = await chrome.cookies.getAll({ url: `${origin}/` });
     const cookie = cookies.map((item) => `${item.name}=${item.value}`).join("; ");

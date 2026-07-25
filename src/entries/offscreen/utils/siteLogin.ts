@@ -14,6 +14,41 @@ interface ParsedLoginForm {
   params: URLSearchParams;
 }
 
+export interface BtschoolPageDiagnostic {
+  stage: string;
+  status: number;
+  finalUrl: string;
+  redirected: boolean;
+  headers: Record<string, string>;
+  title: string;
+  htmlLength: number;
+  cloudflare: {
+    detected: boolean;
+    mitigated: string;
+    ray: string;
+    server: string;
+    challengeMarkers: string[];
+  };
+  html: string;
+}
+
+interface BtschoolOffscreenResult {
+  success: boolean;
+  message: string;
+  raw?: Record<string, unknown>;
+  diagnostic?: BtschoolPageDiagnostic;
+}
+
+class BtschoolLoginError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostic?: BtschoolPageDiagnostic,
+  ) {
+    super(message);
+    this.name = "BtschoolLoginError";
+  }
+}
+
 const BTSCHOOL_HOST = "pt.btschool.club";
 const CAPTCHA_CODE_PATTERN = /^[A-Za-z0-9]{3,8}$/;
 const CAPTCHA_ERROR_PATTERN = /图片代码无效|图片代码已被清除/;
@@ -41,7 +76,14 @@ async function loginBtschool(request: BtschoolLoginRequest) {
     });
     const loginHtml = await loginResponse.text();
     if (!loginResponse.ok) {
-      throw new Error(`BTSCHOOL 登录页请求失败: HTTP ${loginResponse.status}`);
+      failWithPage(
+        `BTSCHOOL 登录页请求失败: HTTP ${loginResponse.status}`,
+        "login-page-http",
+        loginResponse,
+        loginHtml,
+        username,
+        password,
+      );
     }
     if (isLoginSuccess(loginResponse.url, loginHtml, origin)) {
       return { message: "BTSCHOOL 当前浏览器会话已登录", raw: { attempts: attempt } };
@@ -49,7 +91,14 @@ async function loginBtschool(request: BtschoolLoginRequest) {
 
     const form = parseLoginForm(loginHtml, loginUrl, origin);
     if (!form) {
-      throw new Error("BTSCHOOL 登录页未找到验证码登录表单");
+      failWithPage(
+        "BTSCHOOL 登录页未找到验证码登录表单",
+        "login-form-missing",
+        loginResponse,
+        loginHtml,
+        username,
+        password,
+      );
     }
     const imageResponse = await fetch(form.imageUrl, {
       method: "GET",
@@ -61,6 +110,16 @@ async function loginBtschool(request: BtschoolLoginRequest) {
     });
     if (!imageResponse.ok) {
       lastMessage = `BTSCHOOL 验证码图片请求失败: HTTP ${imageResponse.status}`;
+      if (attempt + 1 >= MAX_ATTEMPTS) {
+        failWithPage(
+          `${lastMessage}，imageUrl=${imageResponse.url}`,
+          "captcha-image-http",
+          loginResponse,
+          loginHtml,
+          username,
+          password,
+        );
+      }
       continue;
     }
 
@@ -69,10 +128,16 @@ async function loginBtschool(request: BtschoolLoginRequest) {
       code = await recognizeCaptchaOffline(await imageResponse.blob());
     } catch {
       lastMessage = "BTSCHOOL 本地OCR识别失败";
+      if (attempt + 1 >= MAX_ATTEMPTS) {
+        failWithPage(lastMessage, "captcha-ocr", loginResponse, loginHtml, username, password);
+      }
       continue;
     }
     if (!CAPTCHA_CODE_PATTERN.test(code)) {
       lastMessage = "BTSCHOOL 本地OCR结果格式无效";
+      if (attempt + 1 >= MAX_ATTEMPTS) {
+        failWithPage(lastMessage, "captcha-format", loginResponse, loginHtml, username, password);
+      }
       continue;
     }
     form.params.set("username", username);
@@ -93,22 +158,109 @@ async function loginBtschool(request: BtschoolLoginRequest) {
     });
     const resultHtml = await submitResponse.text();
     if (!submitResponse.ok) {
-      throw new Error(`BTSCHOOL 登录提交失败: HTTP ${submitResponse.status}`);
+      failWithPage(
+        `BTSCHOOL 登录提交失败: HTTP ${submitResponse.status}`,
+        "login-submit-http",
+        submitResponse,
+        resultHtml,
+        username,
+        password,
+      );
     }
     const resultText = new DOMParser().parseFromString(resultHtml, "text/html").body?.textContent || resultHtml;
     if (isLoginSuccess(submitResponse.url, resultHtml, origin)) {
       return { message: "BTSCHOOL 自动登录成功", raw: { attempts: attempt + 1 } };
     }
     if (CREDENTIAL_ERROR_PATTERN.test(resultText)) {
-      throw new Error("BTSCHOOL 用户名或密码不正确，或者账号尚未通过验证");
+      failWithPage(
+        "BTSCHOOL 用户名或密码不正确，或者账号尚未通过验证",
+        "credential-error",
+        submitResponse,
+        resultHtml,
+        username,
+        password,
+      );
     }
     if (CAPTCHA_ERROR_PATTERN.test(resultText)) {
       lastMessage = "BTSCHOOL 图片验证码错误";
+      if (attempt + 1 >= MAX_ATTEMPTS) {
+        failWithPage(lastMessage, "captcha-error", submitResponse, resultHtml, username, password);
+      }
       continue;
     }
-    throw new Error("BTSCHOOL 登录结果无法确认");
+    failWithPage("BTSCHOOL 登录结果无法确认", "login-result-unknown", submitResponse, resultHtml, username, password);
   }
   throw new Error(lastMessage);
+}
+
+function failWithPage(
+  message: string,
+  stage: string,
+  response: Response,
+  html: string,
+  username: string,
+  password: string,
+): never {
+  const diagnostic = buildPageDiagnostic(stage, response, html, username, password);
+  console.error("[BTSCHOOL登录诊断] 页面内容", diagnostic);
+  throw new BtschoolLoginError(message, diagnostic);
+}
+
+function buildPageDiagnostic(
+  stage: string,
+  response: Response,
+  html: string,
+  username: string,
+  password: string,
+): BtschoolPageDiagnostic {
+  const sanitizedHtml = redactSecrets(html, username, password);
+  const lower = sanitizedHtml.toLowerCase();
+  const challengeMarkers = [
+    "cf-chl",
+    "challenge-platform",
+    "cf-turnstile",
+    "just a moment",
+    "attention required",
+    "checking your browser",
+    "cloudflare ray id",
+  ].filter((marker) => lower.includes(marker));
+  const headers = Object.fromEntries(response.headers.entries());
+  const server = headers.server || "";
+  const ray = headers["cf-ray"] || "";
+  const mitigated = headers["cf-mitigated"] || "";
+  const title = new DOMParser().parseFromString(sanitizedHtml, "text/html").title.trim();
+  return {
+    stage,
+    status: response.status,
+    finalUrl: response.url,
+    redirected: response.redirected,
+    headers,
+    title,
+    htmlLength: sanitizedHtml.length,
+    cloudflare: {
+      detected: !!(ray || mitigated || /cloudflare/i.test(server) || challengeMarkers.length),
+      mitigated,
+      ray,
+      server,
+      challengeMarkers,
+    },
+    html: sanitizedHtml,
+  };
+}
+
+function redactSecrets(html: string, username: string, password: string): string {
+  let result = html;
+  for (const [secret, replacement] of [
+    [password, "[REDACTED_PASSWORD]"],
+    [username, "[REDACTED_USERNAME]"],
+  ] as const) {
+    if (secret) {
+      result = result.split(secret).join(replacement);
+    }
+  }
+  return result
+    .replace(/(<input\b[^>]*\bname=["']password["'][^>]*\bvalue=["'])[^"']*/gi, "$1[REDACTED_PASSWORD]")
+    .replace(/(<input\b[^>]*\bvalue=["'])[^"']*(["'][^>]*\bname=["']password["'])/gi, "$1[REDACTED_PASSWORD]$2");
 }
 
 function parseLoginForm(html: string, pageUrl: string, expectedOrigin: string): ParsedLoginForm | null {
@@ -181,6 +333,16 @@ function resolveBtschoolOrigin(siteUrl?: string): string {
   return url.origin;
 }
 
-onMessage("loginBtschool", async ({ data }: { data: BtschoolLoginRequest }) => {
-  return await loginBtschool(data);
+onMessage("loginBtschool", async ({ data }: { data: BtschoolLoginRequest }): Promise<BtschoolOffscreenResult> => {
+  try {
+    const result = await loginBtschool(data);
+    return { success: true, ...result };
+  } catch (error) {
+    const loginError = error instanceof BtschoolLoginError ? error : null;
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+      diagnostic: loginError?.diagnostic,
+    };
+  }
 });
