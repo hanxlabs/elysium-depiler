@@ -7,6 +7,8 @@ import { onMessage, sendMessage } from "@/messages.ts";
 import type { IConfigPiniaStorageSchema } from "@/shared/types.ts";
 import type { IMetadataPiniaStorageSchema } from "@/shared/types.ts";
 
+import { loginSite } from "../siteLogin/index.ts";
+import type { SiteLoginCredentials } from "../siteLogin/index.ts";
 import { setupOffscreenDocument } from "./offscreen.ts";
 
 type AgentState = "disabled" | "idle" | "authenticating" | "connecting" | "connected" | "retrying" | "error";
@@ -19,7 +21,7 @@ interface ElysiumAgentConfig {
 }
 
 interface AgentCommand {
-  type: "refreshSiteData" | "searchTorrent" | "ptSign" | "ping";
+  type: "refreshSiteData" | "searchTorrent" | "ptSign" | "siteLogin" | "ping";
   requestId?: string;
   body?: {
     // refreshSiteData / ptSign / searchTorrent 共用
@@ -31,6 +33,7 @@ interface AgentCommand {
     keyword?: string;
     concurrency?: number; // 并发数，默认 2
     siteCookies?: Record<string, string>; // server 端传来的站点 Cookie（备用，浏览器无 Cookie 时使用）
+    siteBearerTokens?: Record<string, string>; // 仅供本次命令使用的站点 Bearer Token
     siteSearchEntries?: Record<string, Record<string, any>>; // server 端展开后的 depiler 搜索入口
   };
 }
@@ -43,6 +46,8 @@ interface AgentSite {
   twoFactorSecret?: string;
   // 仅由服务端单次下发，不能写入 Depiler 本地站点配置。
   bearerToken?: string;
+  // 仅由服务端单次下发，仅供站点登录命令使用。
+  credentials?: SiteLoginCredentials;
 }
 
 interface LoginResult {
@@ -210,6 +215,10 @@ async function handleCommand(command: AgentCommand) {
     await runPerSiteCommand(command, refreshSiteData);
     return;
   }
+  if (command.type === "siteLogin") {
+    await runPerSiteCommand(command, loginSite);
+    return;
+  }
   if (command.type === "searchTorrent") {
     // 改造：使用 depiler 自带搜索，而非 server 端传搜索入口配置
     await triggerDepilerSearch(command);
@@ -271,6 +280,9 @@ async function runPerSiteCommand(
 }
 
 async function refreshSiteData(site: AgentSite) {
+  if (site.siteKey.toLowerCase() === "sunnypt") {
+    return await refreshSunnyPtSiteData(site);
+  }
   await setupOffscreenDocument();
   // hddolby: 先过 2FA，确保后续请求能拿到业务数据而非 2FA 页面
   // 注意：必须用 /index.php 触发 2FA 检测，因为 hddolby 首页 / 可能不检查登录/2FA 状态
@@ -290,6 +302,114 @@ async function refreshSiteData(site: AgentSite) {
     raw: userInfo,
     credential: await buildCredential(site),
   };
+}
+
+async function refreshSunnyPtSiteData(site: AgentSite) {
+  if (!site.bearerToken) {
+    throw new Error("SUNNYPT_AUTH_EXPIRED: SunnyPT 未收到 Bearer Token");
+  }
+  const headers = {
+    Accept: "application/json, text/plain, */*",
+    Authorization: `Bearer ${site.bearerToken}`,
+    Origin: "https://sunnypt.top",
+    Referer: "https://sunnypt.top/",
+  };
+  const request = async (path: string) => {
+    const response = await fetch(`https://api.sunnypt.top${path}`, { method: "GET", headers });
+    const body = (await response.json()) as { code?: number; data?: any; msg?: string };
+    if (response.status === 401 || response.status === 403 || isSunnyPtAuthExpired(body.msg)) {
+      throw new Error(`SUNNYPT_AUTH_EXPIRED: ${body.msg || `HTTP ${response.status}`}`);
+    }
+    if (!response.ok || body.code !== 0) {
+      throw new Error(body.msg || `SunnyPT 资料请求失败: HTTP ${response.status}`);
+    }
+    return body.data ?? {};
+  };
+
+  const profile = await request("/api/v1/user/details/info");
+  const seeding = await request("/api/v1/user/details/seeding?limit=50&offset=0");
+  const seedBonus = await request("/api/v1/user/seed-bonus");
+  const attendance = await request("/api/v1/attendance/status");
+  const seedingRows = Array.isArray(seeding.list) ? seeding.list : Array.isArray(seeding.data) ? seeding.data : [];
+  const seedingSize = seedingRows.reduce(
+    (total: number, row: any) => total + parseSunnyPtSize(row?.size ?? row?.torrent_size),
+    0,
+  );
+  const normalized = {
+    ...profile,
+    id: profile.id,
+    name: profile.username,
+    username: profile.username,
+    levelName: sunnyPtLevelName(profile.level ?? profile.level_name, profile.class),
+    uploaded: parseSunnyPtSize(profile.uploaded ?? profile.upload),
+    trueUploaded: parseSunnyPtSize(profile.real_uploaded ?? profile.actual_uploaded ?? profile.uploaded),
+    downloaded: parseSunnyPtSize(profile.downloaded ?? profile.download),
+    trueDownloaded: parseSunnyPtSize(profile.real_downloaded ?? profile.actual_downloaded ?? profile.downloaded),
+    seeding: Number(seeding.total ?? seeding.count ?? seedBonus.official_seeding_count ?? 0),
+    seedingSize: seedingSize || parseSunnyPtSize(seedBonus.official_seeding_size ?? profile.seeding_size),
+    bonus: Number(seedBonus.seed_bonus ?? profile.bonus ?? profile.seed_bonus ?? 0),
+    bonusPerHour: Number(
+      seedBonus.estimated_total_per_hour ?? seedBonus.self_estimated_per_hour ?? seedBonus.seed_points_per_hour ?? 0,
+    ),
+    attendanceCardCount: Number(attendance.makeup_cards ?? attendance.attendance_cards ?? 0),
+    attendanceBonus: Number(attendance.points ?? 0),
+  };
+  return {
+    message: "刷新成功",
+    normalized,
+    raw: normalized,
+    credential: await buildCredential(site, site.bearerToken),
+  };
+}
+
+function isSunnyPtAuthExpired(message?: string): boolean {
+  const text = String(message || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  return (
+    text.includes("tokenexpired") ||
+    text.includes("jwtexpired") ||
+    text.includes("invalidtoken") ||
+    text.includes("unauthorized") ||
+    text.includes("token已过期") ||
+    text.includes("token过期") ||
+    text.includes("token无效") ||
+    text.includes("token不存在") ||
+    text.includes("请先登录") ||
+    text.includes("登录已过期") ||
+    text.includes("认证失败") ||
+    text.includes("鉴权失败")
+  );
+}
+
+function parseSunnyPtSize(value: unknown): number {
+  const text = String(value ?? "")
+    .trim()
+    .replace(/,/g, "");
+  const match = text.match(/^([0-9.]+)\s*([KMGTPE]?I?B|B)?$/i);
+  if (!match) return Number(value) || 0;
+  const units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+  const unit = String(match[2] || "B")
+    .toUpperCase()
+    .replace("IB", "B");
+  return Number(match[1]) * 1024 ** Math.max(0, units.indexOf(unit));
+}
+
+function sunnyPtLevelName(level: unknown, classId: unknown): string {
+  if (String(level ?? "").trim()) return String(level).trim();
+  const levels = [
+    "Peasant",
+    "User",
+    "Power User",
+    "Elite User",
+    "Crazy User",
+    "Insane User",
+    "Veteran User",
+    "Extreme User",
+    "Ultimate User",
+    "Nexus Master",
+  ];
+  return levels[Number(classId)] ?? String(classId ?? "");
 }
 
 async function normalizeLevelName(userInfo: IUserInfo) {
@@ -319,6 +439,7 @@ async function triggerDepilerSearch(command: AgentCommand) {
   const keyword = (command.body?.keyword ?? "").trim();
   const siteKeys: string[] = command.body?.siteKeys ?? [];
   const siteCookiesFromServer: Record<string, string> = command.body?.siteCookies ?? {};
+  const siteBearerTokens: Record<string, string> = command.body?.siteBearerTokens ?? {};
   const siteSearchEntries: Record<string, Record<string, any>> = command.body?.siteSearchEntries ?? {};
 
   if (!keyword) {
@@ -348,16 +469,118 @@ async function triggerDepilerSearch(command: AgentCommand) {
     }
   }
 
+  const remainingSiteKeys: string[] = [];
+  for (const siteKey of siteKeys) {
+    if (siteKey.toLowerCase() !== "sunnypt") {
+      remainingSiteKeys.push(siteKey);
+      continue;
+    }
+    try {
+      const items = await searchSunnyPtWithBearer(keyword, siteBearerTokens[siteKey]);
+      sendToServer({
+        type: "siteResult",
+        requestId,
+        body: {
+          siteKey,
+          siteName: "Sunny",
+          success: true,
+          items,
+          message: `搜索完成，${items.length} 条结果`,
+        },
+      });
+    } catch (error: any) {
+      sendToServer({
+        type: "siteResult",
+        requestId,
+        body: {
+          siteKey,
+          siteName: "Sunny",
+          success: false,
+          message: error?.message ?? String(error),
+          error: error?.message ?? String(error),
+        },
+      });
+    }
+  }
+  if (remainingSiteKeys.length === 0) {
+    sendToServer({ type: "complete", requestId, body: { message: "done" } });
+    return;
+  }
+
   // 2. 通知 options 页面触发 depiler 原有搜索（结果自动渲染 UI + 发回 server）
   console.log("[elysiumAgent] triggerDepilerSearch: delegating to options", {
     requestId,
     keyword,
-    siteKeys,
+    siteKeys: remainingSiteKeys,
     siteSearchEntries,
   });
-  sendMessage("triggerAgentSearch", { requestId, siteKeys, keyword, siteSearchEntries } as any).catch((err) => {
+  sendMessage("triggerAgentSearch", {
+    requestId,
+    siteKeys: remainingSiteKeys,
+    keyword,
+    siteSearchEntries,
+  } as any).catch((err) => {
     sendToServer({ type: "error", requestId, body: { message: `无法触发 Depiler 搜索: ${err?.message ?? err}` } });
   });
+}
+
+async function searchSunnyPtWithBearer(keyword: string, bearerToken?: string) {
+  if (!bearerToken) {
+    throw new Error("SUNNYPT_AUTH_EXPIRED: SunnyPT 未收到 Bearer Token");
+  }
+  const response = await fetch("https://api.sunnypt.top/api/v1/torrent/list", {
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/json;charset=UTF-8",
+      Authorization: `Bearer ${bearerToken}`,
+      Origin: "https://sunnypt.top",
+      Referer: "https://sunnypt.top/",
+    },
+    body: JSON.stringify({ keyword, limit: 100, offset: 0 }),
+  });
+  const body = (await response.json()) as { code?: number; data?: any; msg?: string };
+  if (response.status === 401 || response.status === 403 || isSunnyPtAuthExpired(body.msg)) {
+    throw new Error(`SUNNYPT_AUTH_EXPIRED: ${body.msg || `HTTP ${response.status}`}`);
+  }
+  if (!response.ok || body.code !== 0) {
+    throw new Error(body.msg || `SunnyPT 检索失败: HTTP ${response.status}`);
+  }
+  const data = body.data ?? {};
+  const rows = Array.isArray(data.list) ? data.list : Array.isArray(data.data) ? data.data : data.items;
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row: any) => {
+    const id = String(row.id ?? "");
+    return {
+      id: `sunnypt:${id}`,
+      siteKey: "sunnypt",
+      siteName: "Sunny",
+      siteFavicon: "",
+      title: String(row.title ?? row.name ?? ""),
+      subTitle: String(row.sub_name ?? row.subtitle ?? row.small_descr ?? ""),
+      freeStatus: sunnyPtPromotion(row),
+      downloadState: "unknown",
+      publishTimeText: String(row.add_time ?? row.added ?? row.created_at ?? ""),
+      sizeText: formatBytes(parseSunnyPtSize(row.size ?? row.torrent_size)),
+      seeders: Number(row.seeders ?? row.seeder ?? 0),
+      leechers: Number(row.leechers ?? row.leecher ?? 0),
+      completed: Number(row.times_completed ?? row.completed ?? 0),
+      detailUrl: String(row.details_url ?? row.detail_url ?? `https://sunnypt.top/torrent/${id}`),
+    };
+  });
+}
+
+function sunnyPtPromotion(row: any): string {
+  const promotion = row?.promotion;
+  if (promotion && typeof promotion === "object" && promotion.is_active) {
+    const multiplier = Number(promotion.down_multiplier ?? 1);
+    if (multiplier === 0) return "free";
+    if (multiplier === 0.5) return "50%";
+  }
+  const text = String(row?.promotion_type ?? row?.promotion ?? row?.discount ?? "").toLowerCase();
+  if (text.includes("free") || text === "0") return "free";
+  if (text.includes("50")) return "50%";
+  return "normal";
 }
 
 /**
@@ -463,6 +686,7 @@ async function signSite(site: AgentSite) {
     bodyPreview: string;
     message: string;
     bearerToken?: string;
+    authExpired?: boolean;
   };
 
   // 遇到 WAF 拦截：打开新标签页让浏览器完成 WAF JS 挑战，直接标记成功
@@ -482,7 +706,7 @@ async function signSite(site: AgentSite) {
   }
 
   if (!signResult.success) {
-    throw new Error(signResult.message);
+    throw new Error(`${signResult.authExpired ? "SUNNYPT_AUTH_EXPIRED: " : ""}${signResult.message}`);
   }
   return {
     message: signResult.message,

@@ -15,6 +15,7 @@ interface SignResult {
   bodyPreview: string;
   message: string;
   bearerToken?: string;
+  authExpired?: boolean;
 }
 
 interface CaptchaForm {
@@ -113,7 +114,8 @@ async function signSunnyPt(bearerToken?: string): Promise<SignResult> {
       },
     });
     const body = (await response.json()) as { code?: number; data?: { points?: number; days?: number }; msg?: string };
-    if (response.status >= 200 && response.status < 300 && body.code === 0) {
+    const alreadyCheckedIn = isSunnyPtAlreadyCheckedIn(body.msg);
+    if ((response.status >= 200 && response.status < 300 && body.code === 0) || alreadyCheckedIn) {
       const points = body.data?.points;
       const days = body.data?.days;
       const detail = [points === undefined ? "" : `获得 ${points} 积分`, days === undefined ? "" : `连续 ${days} 天`]
@@ -128,16 +130,49 @@ async function signSunnyPt(bearerToken?: string): Promise<SignResult> {
       return {
         ...signSuccess(
           response.status,
-          detail ? `SunnyPT 签到成功（${detail}）` : "SunnyPT 签到成功",
+          alreadyCheckedIn ? "SunnyPT 今日已签到" : detail ? `SunnyPT 签到成功（${detail}）` : "SunnyPT 签到成功",
           JSON.stringify(body),
         ),
         bearerToken: refreshedBearerToken || bearerToken,
       };
     }
-    return signFailure(response.status, body.msg || `SunnyPT 签到失败: HTTP ${response.status}`, JSON.stringify(body));
+    return {
+      ...signFailure(response.status, body.msg || `SunnyPT 签到失败: HTTP ${response.status}`, JSON.stringify(body)),
+      authExpired: isSunnyPtAuthExpired(response.status, body.msg),
+    };
   } catch (error: any) {
     return signFailure(0, `SunnyPT 签到异常: ${error?.message ?? String(error)}`, "");
   }
+}
+
+function isSunnyPtAlreadyCheckedIn(message?: string): boolean {
+  const text = String(message || "").replace(/\s+/g, "");
+  return (
+    text.includes("今日已签到") ||
+    text.includes("今天已经签到") ||
+    text.includes("今天已签到") ||
+    text.toLowerCase().includes("already checked in")
+  );
+}
+
+function isSunnyPtAuthExpired(statusCode: number, message?: string): boolean {
+  if (statusCode === 401 || statusCode === 403) return true;
+  const text = String(message || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  return (
+    text.includes("tokenexpired") ||
+    text.includes("jwtexpired") ||
+    text.includes("invalidtoken") ||
+    text.includes("unauthorized") ||
+    text.includes("token已过期") ||
+    text.includes("token过期") ||
+    text.includes("token无效") ||
+    text.includes("请先登录") ||
+    text.includes("登录已过期") ||
+    text.includes("认证失败") ||
+    text.includes("鉴权失败")
+  );
 }
 
 async function signLuckpt(signUrl: string): Promise<SignResult> {
