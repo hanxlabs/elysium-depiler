@@ -200,6 +200,9 @@ interface ProtocolMap extends TMessageMap {
     raw?: Record<string, unknown>;
     diagnostic?: any;
   };
+  recognizeSiteLoginCaptcha(data: { base64: string; contentType?: string }): {
+    code: string;
+  };
 
   // 2.11 Elysium agent 触发 depiler 原有搜索（background → options）
   triggerAgentSearch(data: {

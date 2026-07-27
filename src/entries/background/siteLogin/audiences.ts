@@ -7,6 +7,7 @@ const definition: SiteLoginDefinition = {
   hosts: ["audiences.me"],
   defaultUrl: "https://audiences.me/",
   imageCaptcha: true,
+  cloudflarePreflight: true,
   twoFactorField: "scode",
   submitSelector: 'input[type="submit"]',
 };
