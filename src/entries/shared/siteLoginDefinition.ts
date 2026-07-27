@@ -4,6 +4,7 @@ export interface SiteLoginDefinition {
   hosts: string[];
   defaultUrl: string;
   imageCaptcha?: boolean;
+  cloudflarePreflight?: boolean;
   turnstile?: boolean;
   challenge?: boolean;
   twoFactorField?: string;
@@ -11,7 +12,32 @@ export interface SiteLoginDefinition {
   formSelector?: string;
   submitSelector?: string;
   revealSelector?: string;
+  alreadyLoggedInMarkers?: string[];
   unit3d?: boolean;
+}
+
+const NEXUS_ALREADY_LOGGED_IN_MARKERS = [
+  "你已经登录",
+  "你已登录",
+  "您已经登录",
+  "您已登录",
+  "你已经登陆",
+  "你已登陆",
+  "您已经登陆",
+  "您已登陆",
+  "你已經登入",
+  "你已登入",
+  "您已經登入",
+  "您已登入",
+  "you are already logged in",
+  "you have already logged in",
+];
+
+export function hasNexusAlreadyLoggedInMarker(text: string, additionalMarkers: string[] = []): boolean {
+  const normalizedText = text.toLowerCase();
+  return [...NEXUS_ALREADY_LOGGED_IN_MARKERS, ...additionalMarkers].some((marker) =>
+    normalizedText.includes(marker.toLowerCase()),
+  );
 }
 
 export function resolveSiteLoginOrigin(definition: SiteLoginDefinition, siteUrl?: string): string {

@@ -7,6 +7,7 @@ const definition: SiteLoginDefinition = {
   hosts: ["ubits.club"],
   defaultUrl: "https://ubits.club/",
   imageCaptcha: true,
+  cloudflarePreflight: true,
   twoFactorField: "two_step_code",
   submitSelector: 'input[type="submit"]',
 };

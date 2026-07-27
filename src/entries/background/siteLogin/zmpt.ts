@@ -8,5 +8,6 @@ const definition: SiteLoginDefinition = {
   defaultUrl: "https://zmpt.cc/",
   challenge: true,
   twoFactorField: "two_step_code",
+  submitSelector: 'input[type="submit"][value="登录"]',
 };
 export const zmptLoginAdapter = createSiteLoginAdapter(definition);

@@ -1,5 +1,6 @@
+import { sendMessage } from "@/messages.ts";
 import { generateTotp } from "@/shared/totp.ts";
-import type { SiteLoginDefinition } from "@/shared/siteLoginDefinition.ts";
+import { hasNexusAlreadyLoggedInMarker, type SiteLoginDefinition } from "@/shared/siteLoginDefinition.ts";
 
 interface PterLoginMessage {
   type: "elysiumPterLogin";
@@ -86,13 +87,13 @@ async function handlePterLoginMessage(message: PterLoginMessage): Promise<Record
 
 function inspectPterPage(): PterPageState {
   const text = document.body?.innerText || "";
-  const path = location.pathname.replace(/\/+$/, "");
-  const isIndexPage = ["", "/index.php"].includes(path) || document.title.includes("首页");
+  const hasLoginForm = !!document.querySelector(FORM_SELECTOR);
   const hasAuthenticatedMarker =
     !!document.querySelector('a[href*="logout.php"], [data-url*="logout.php"]') ||
     (text.includes("欢迎回来") && !!document.querySelector('a[href*="userdetails.php"]'));
+  const explicitlyAlreadyLoggedIn = !hasLoginForm && hasNexusAlreadyLoggedInMarker(text);
   let state: PterPageState["state"] = "unknown";
-  if (isIndexPage && hasAuthenticatedMarker) {
+  if (hasAuthenticatedMarker || explicitlyAlreadyLoggedIn) {
     state = "success";
   } else if (/Verify not success|验证未通过|Are you a bot\?/i.test(text)) {
     state = "turnstile_error";
@@ -104,7 +105,7 @@ function inspectPterPage(): PterPageState {
     )
   ) {
     state = "two_factor_error";
-  } else if (document.querySelector(FORM_SELECTOR)) {
+  } else if (hasLoginForm) {
     state = "login";
   }
   return { state, title: document.title, url: location.href };
@@ -195,6 +196,14 @@ async function handleMultiSiteLoginMessage(message: MultiSiteLoginMessage): Prom
     if (definition.turnstile) {
       await waitForMultiSiteTurnstileToken(120_000, definition.label);
     }
+    if (definition.imageCaptcha) {
+      const captchaCode = await recognizeMultiSiteCaptcha(form, definition);
+      setMultiSiteField(
+        form.querySelector<HTMLInputElement>('input[name="imagestring"]'),
+        captchaCode,
+        definition.label,
+      );
+    }
     const twoFactorSecret = message.twoFactorSecret?.trim();
     if (definition.twoFactorField && twoFactorSecret) {
       const code = await generateTotp(twoFactorSecret, 5);
@@ -226,15 +235,17 @@ async function handleMultiSiteLoginMessage(message: MultiSiteLoginMessage): Prom
 function inspectMultiSitePage(definition: SiteLoginDefinition): Record<string, unknown> {
   const text = document.body?.innerText || "";
   const lowerHtml = document.documentElement?.innerHTML.toLowerCase() || "";
-  const path = location.pathname.replace(/\/+$/, "");
-  const isIndex = ["", "/index.php"].includes(path) || /首页|首頁/.test(document.title);
+  const formSelector = definition.formSelector || 'form[action$="takelogin.php"][method="post"]';
+  const hasLoginForm = !!document.querySelector(formSelector);
   const authenticated = definition.unit3d
     ? !!document.querySelector('form[action$="/logout"]')
     : !!document.querySelector('a[href*="logout.php"], [data-url*="logout.php"]') ||
       ((text.includes("欢迎回来") || text.includes("歡迎回來")) &&
         !!document.querySelector('a[href*="userdetails.php"]'));
+  const explicitlyAlreadyLoggedIn =
+    !definition.unit3d && !hasLoginForm && hasNexusAlreadyLoggedInMarker(text, definition.alreadyLoggedInMarkers);
   let state = "unknown";
-  if (definition.unit3d ? authenticated : isIndex && authenticated) {
+  if (authenticated || explicitlyAlreadyLoggedIn) {
     state = "success";
   } else if (/图片代码无效|圖片代碼無效|图片代码已被清除|圖片代碼已被清除/i.test(text)) {
     state = "captcha_error";
@@ -262,7 +273,7 @@ function inspectMultiSitePage(definition: SiteLoginDefinition): Record<string, u
     )
   ) {
     state = "cloudflare";
-  } else if (document.querySelector(definition.formSelector || 'form[action$="takelogin.php"][method="post"]')) {
+  } else if (hasLoginForm) {
     state = "login";
   }
   return {
@@ -288,6 +299,49 @@ function setMultiSiteField(field: HTMLInputElement | null, value: string, label:
   field.value = value;
   field.dispatchEvent(new Event("input", { bubbles: true }));
   field.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function recognizeMultiSiteCaptcha(form: HTMLFormElement, definition: SiteLoginDefinition): Promise<string> {
+  const image = form.querySelector<HTMLImageElement>('img[alt="CAPTCHA"], img[src*="action=regimage"]');
+  const imageSource = image?.getAttribute("src");
+  if (!imageSource) {
+    throw new Error(`${definition.label}登录页未找到验证码图片`);
+  }
+  const imageUrl = new URL(imageSource, location.href);
+  if (imageUrl.origin !== location.origin || !definition.hosts.includes(imageUrl.hostname.toLowerCase())) {
+    throw new Error(`${definition.label}验证码图片地址无效`);
+  }
+  const response = await fetch(imageUrl.toString(), {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    headers: { Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" },
+  });
+  if (!response.ok) {
+    throw new Error(`${definition.label}验证码图片请求失败: HTTP ${response.status}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 2_000_000) {
+    throw new Error(`${definition.label}验证码图片大小无效`);
+  }
+  const result = await sendMessage("recognizeSiteLoginCaptcha", {
+    base64: bytesToBase64(bytes),
+    contentType: response.headers.get("content-type") || "image/png",
+  });
+  const code = result.code?.trim() || "";
+  if (!/^[A-Za-z0-9]{3,8}$/.test(code)) {
+    throw new Error(`${definition.label}验证码识别结果格式无效`);
+  }
+  return code;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function waitForMultiSiteTurnstileToken(timeoutMs: number, label: string): Promise<void> {

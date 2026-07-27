@@ -6,7 +6,9 @@ const definition: SiteLoginDefinition = {
   label: "猪猪",
   hosts: ["piggo.me"],
   defaultUrl: "https://piggo.me/",
+  cloudflarePreflight: true,
   challenge: true,
   twoFactorField: "two_step_code",
+  submitSelector: 'input[type="button"][value="登录"]',
 };
 export const piggoLoginAdapter = createSiteLoginAdapter(definition);

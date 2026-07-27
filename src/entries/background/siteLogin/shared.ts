@@ -44,36 +44,14 @@ export function createSiteLoginAdapter(definition: SiteLoginDefinition): SiteLog
       }
       const origin = resolveSiteLoginOrigin(definition, site.siteUrl);
 
-      if (definition.turnstile) {
+      if (definition.turnstile || definition.cloudflarePreflight) {
         return loginMultiSiteViaTab(site, definition, origin);
       }
 
-      await setupOffscreenDocument();
-      const result = (await sendMessage("loginMultiSite", {
-        siteKey: definition.key,
-        definition,
-        siteUrl: origin,
-        username,
-        password,
-        twoFactorSecret: site.credentials?.twoFactorSecret,
-      })) as MultiSiteOffscreenResult;
+      const result = await requestMultiSiteOffscreenLogin(site, definition, origin);
       if (!result.success) {
-        console.error(
-          `[${definition.label}登录诊断] Offscreen返回的失败页面`,
-          result.diagnostic ?? {
-            message: result.message,
-            diagnostic: "未获取到页面诊断信息，失败可能发生在请求页面之前",
-          },
-        );
-        if (result.diagnostic?.html) {
-          console.error(`[${definition.label}登录诊断] 脱敏后的完整HTML\n${result.diagnostic.html}`);
-        }
+        logMultiSiteOffscreenFailure(definition, result);
         if (result.diagnostic?.cloudflare?.detected) {
-          if (definition.imageCaptcha) {
-            throw new Error(
-              result.message || `${definition.label}Depiler遇到Cloudflare页面，交由Browser完成图片验证码登录`,
-            );
-          }
           console.warn(`[${definition.label}登录诊断] 检测到Cloudflare页面，切换真实标签页执行`);
           return loginMultiSiteViaTab(site, definition, origin);
         }
@@ -95,11 +73,14 @@ async function loginMultiSiteViaTab(
     throw new Error(`${definition.label}自动登录缺少用户名或密码`);
   }
   const loginUrl = new URL(definition.loginPath || "/login.php", origin).toString();
+  if (definition.imageCaptcha) {
+    await setupOffscreenDocument();
+  }
   const tab = await chrome.tabs.create({ url: loginUrl, active: true });
   if (typeof tab.id !== "number") {
     throw new Error(`${definition.label}自动登录无法创建浏览器标签页`);
   }
-  const attempts = definition.turnstile ? MAX_TURNSTILE_ATTEMPTS : 1;
+  const attempts = definition.turnstile || definition.imageCaptcha ? MAX_TURNSTILE_ATTEMPTS : 1;
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       if (attempt > 1) {
@@ -112,7 +93,9 @@ async function loginMultiSiteViaTab(
           alreadyLoggedIn: true,
         });
       }
-
+      if (definition.imageCaptcha) {
+        console.info(`[${definition.label}登录诊断] Cloudflare已通过，在真实标签页读取并识别图片验证码`);
+      }
       const prepared = await withMultiSiteTimeout(
         sendMultiSiteTabMessage(tab.id, {
           type: "elysiumMultiSiteLogin",
@@ -129,12 +112,15 @@ async function loginMultiSiteViaTab(
       if (!prepared.success) {
         throw new Error(prepared.message || `${definition.label}登录表单准备失败`);
       }
-      await sendMultiSiteTabMessage(tab.id, {
+      const submitted = await sendMultiSiteTabMessage(tab.id, {
         type: "elysiumMultiSiteLogin",
         siteKey: definition.key,
         definition,
         action: "submit",
       });
+      if (!submitted.success) {
+        throw new Error(submitted.message || `${definition.label}登录表单提交失败`);
+      }
       await delayMultiSite(750);
       const result = await waitForMultiSiteState(
         tab.id,
@@ -149,7 +135,7 @@ async function loginMultiSiteViaTab(
           realTab: true,
         });
       }
-      if (result.state === "turnstile_error" && attempt < attempts) {
+      if ((result.state === "turnstile_error" || result.state === "captcha_error") && attempt < attempts) {
         continue;
       }
       console.error(`[${definition.label}登录诊断] 真实标签页失败状态`, result);
@@ -164,6 +150,40 @@ async function loginMultiSiteViaTab(
     throw new Error(`${definition.label}Cloudflare Turnstile验证未通过`);
   } finally {
     await chrome.tabs.remove(tab.id).catch(() => undefined);
+  }
+}
+
+async function requestMultiSiteOffscreenLogin(
+  site: SiteLoginTarget,
+  definition: SiteLoginDefinition,
+  origin: string,
+): Promise<MultiSiteOffscreenResult> {
+  const username = site.credentials?.username?.trim();
+  const password = site.credentials?.password;
+  if (!username || !password) {
+    throw new Error(`${definition.label}自动登录缺少用户名或密码`);
+  }
+  await setupOffscreenDocument();
+  return (await sendMessage("loginMultiSite", {
+    siteKey: definition.key,
+    definition,
+    siteUrl: origin,
+    username,
+    password,
+    twoFactorSecret: site.credentials?.twoFactorSecret,
+  })) as MultiSiteOffscreenResult;
+}
+
+function logMultiSiteOffscreenFailure(definition: SiteLoginDefinition, result: MultiSiteOffscreenResult): void {
+  console.error(
+    `[${definition.label}登录诊断] Offscreen返回的失败页面`,
+    result.diagnostic ?? {
+      message: result.message,
+      diagnostic: "未获取到页面诊断信息，失败可能发生在请求页面之前",
+    },
+  );
+  if (result.diagnostic?.html) {
+    console.error(`[${definition.label}登录诊断] 脱敏后的完整HTML\n${result.diagnostic.html}`);
   }
 }
 

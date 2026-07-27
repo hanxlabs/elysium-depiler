@@ -1,5 +1,9 @@
 import { onMessage } from "@/messages.ts";
-import { resolveSiteLoginOrigin, type SiteLoginDefinition } from "@/shared/siteLoginDefinition.ts";
+import {
+  hasNexusAlreadyLoggedInMarker,
+  resolveSiteLoginOrigin,
+  type SiteLoginDefinition,
+} from "@/shared/siteLoginDefinition.ts";
 import { generateTotp } from "@/shared/totp.ts";
 
 import { recognizeCaptchaOffline } from "./captchaOcr.ts";
@@ -306,13 +310,13 @@ function isLoginSuccess(finalUrl: string, html: string, expectedOrigin: string):
     return false;
   }
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const path = url.pathname.replace(/\/+$/, "");
-  const isIndexPage = ["", "/index.php"].includes(path) || doc.title.includes("首页");
   const pageText = doc.body?.textContent || "";
+  const hasLoginForm = !!doc.querySelector('form[action$="takelogin.php"][method="post"]');
   const hasAuthenticatedMarker =
     !!doc.querySelector('a[href*="logout.php"]') ||
     (pageText.includes("欢迎回来") && !!doc.querySelector('a[href*="userdetails.php"]'));
-  return isIndexPage && hasAuthenticatedMarker;
+  const explicitlyAlreadyLoggedIn = !hasLoginForm && hasNexusAlreadyLoggedInMarker(pageText);
+  return hasAuthenticatedMarker || explicitlyAlreadyLoggedIn;
 }
 
 function resolveNexusCaptchaOrigin(siteUrl: string | undefined, site: NexusCaptchaSite): string {
@@ -413,7 +417,7 @@ async function loginMultiSite(request: MultiSiteLoginRequest): Promise<{
         [username, password, twoFactorSecret || ""],
       );
     }
-    if (isMultiSiteLoginSuccess(loginResponse.url, loginHtml, definition.unit3d === true, definition.hosts)) {
+    if (isMultiSiteLoginSuccess(loginResponse.url, loginHtml, definition)) {
       return {
         message: `${definition.label}当前浏览器会话已登录`,
         raw: { attempts: attempt - 1, alreadyLoggedIn: true },
@@ -589,7 +593,7 @@ async function loginMultiSite(request: MultiSiteLoginRequest): Promise<{
         secrets,
       );
     }
-    if (isMultiSiteLoginSuccess(submitResponse.url, resultHtml, definition.unit3d === true, definition.hosts)) {
+    if (isMultiSiteLoginSuccess(submitResponse.url, resultHtml, definition)) {
       return {
         message: `${definition.label}自动登录成功`,
         raw: { attempts: attempt, usedTwoFactor: !!twoFactorSecret, challenge: !!definition.challenge },
@@ -642,27 +646,28 @@ function classifyMultiSiteFailure(text: string): string {
   return "login-result-unknown";
 }
 
-function isMultiSiteLoginSuccess(finalUrl: string, html: string, unit3d: boolean, allowedHosts: string[]): boolean {
+function isMultiSiteLoginSuccess(finalUrl: string, html: string, definition: SiteLoginDefinition): boolean {
   let url: URL;
   try {
     url = new URL(finalUrl);
   } catch {
     return false;
   }
-  if (!allowedHosts.includes(url.hostname.toLowerCase())) {
+  if (!definition.hosts.includes(url.hostname.toLowerCase())) {
     return false;
   }
   const doc = new DOMParser().parseFromString(html, "text/html");
-  if (unit3d) {
+  if (definition.unit3d) {
     return !!doc.querySelector('form[action$="/logout"]');
   }
   const text = doc.body?.textContent || "";
-  const path = url.pathname.replace(/\/+$/, "");
-  const isIndex = ["", "/index.php"].includes(path) || /首页|首頁/.test(doc.title);
+  const formSelector = definition.formSelector || 'form[action$="takelogin.php"][method="post"]';
   const authenticated =
     !!doc.querySelector('a[href*="logout.php"], [data-url*="logout.php"]') ||
     ((text.includes("欢迎回来") || text.includes("歡迎回來")) && !!doc.querySelector('a[href*="userdetails.php"]'));
-  return isIndex && authenticated;
+  const explicitlyAlreadyLoggedIn =
+    !doc.querySelector(formSelector) && hasNexusAlreadyLoggedInMarker(text, definition.alreadyLoggedInMarkers);
+  return authenticated || explicitlyAlreadyLoggedIn;
 }
 
 function detectCloudflare(html: string): boolean {
@@ -760,4 +765,18 @@ onMessage("loginMultiSite", async ({ data }): Promise<BtschoolOffscreenResult> =
       diagnostic: loginError?.diagnostic,
     };
   }
+});
+
+onMessage("recognizeSiteLoginCaptcha", async ({ data }): Promise<{ code: string }> => {
+  if (!data.base64 || data.base64.length > 3_000_000) {
+    throw new Error("验证码图片数据无效");
+  }
+  const binary = atob(data.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const contentType = data.contentType?.startsWith("image/") ? data.contentType : "image/png";
+  const code = await recognizeCaptchaOffline(new Blob([bytes], { type: contentType }));
+  return { code };
 });
