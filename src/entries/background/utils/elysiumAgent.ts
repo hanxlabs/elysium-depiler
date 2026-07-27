@@ -6,6 +6,7 @@ import type { IUserInfo } from "@ptd/site/types/userinfo.ts";
 import { onMessage, sendMessage } from "@/messages.ts";
 import type { IConfigPiniaStorageSchema } from "@/shared/types.ts";
 import type { IMetadataPiniaStorageSchema } from "@/shared/types.ts";
+import { generateTotp } from "@/shared/totp.ts";
 
 import { loginSite } from "../siteLogin/index.ts";
 import type { SiteLoginCredentials } from "../siteLogin/index.ts";
@@ -977,48 +978,6 @@ function buildBrowserHeaders(referer: string): Record<string, string> {
     Referer: referer,
     "Upgrade-Insecure-Requests": "1",
   };
-}
-
-async function generateTotp(secret: string) {
-  const normalized = normalizeSecret(secret);
-  const key = await crypto.subtle.importKey("raw", base32Decode(normalized), { name: "HMAC", hash: "SHA-1" }, false, [
-    "sign",
-  ]);
-  const counter = Math.floor(Date.now() / 1000 / 30);
-  const buffer = new ArrayBuffer(8);
-  const view = new DataView(buffer);
-  view.setUint32(4, counter);
-  const hash = new Uint8Array(await crypto.subtle.sign("HMAC", key, buffer));
-  const offset = hash[hash.length - 1] & 0xf;
-  const binary = ((hash[offset] & 0x7f) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
-  return String(binary % 1000000).padStart(6, "0");
-}
-
-function normalizeSecret(secret: string) {
-  let value = secret.trim();
-  if (/^otpauth:\/\//i.test(value)) {
-    const parsed = new URL(value);
-    value = parsed.searchParams.get("secret") ?? value;
-  }
-  return value.replace(/[\s-]/g, "").toUpperCase();
-}
-
-function base32Decode(value: string) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const bytes: number[] = [];
-  let bits = 0;
-  let bitBuffer = 0;
-  for (const char of value.replace(/=+$/, "")) {
-    const index = alphabet.indexOf(char.toUpperCase());
-    if (index < 0) continue;
-    bitBuffer = (bitBuffer << 5) | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((bitBuffer >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  return new Uint8Array(bytes);
 }
 
 function parseServerUrl(raw: string) {

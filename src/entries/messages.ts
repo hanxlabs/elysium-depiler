@@ -186,6 +186,21 @@ interface ProtocolMap extends TMessageMap {
   };
   elysiumAgentReconnect(): void;
 
+  // 2.10.1 共享 PT 站点自动登录（background → offscreen）
+  loginMultiSite(data: {
+    siteKey: string;
+    definition: import("@/shared/siteLoginDefinition.ts").SiteLoginDefinition;
+    siteUrl?: string;
+    username?: string;
+    password?: string;
+    twoFactorSecret?: string;
+  }): {
+    success: boolean;
+    message: string;
+    raw?: Record<string, unknown>;
+    diagnostic?: any;
+  };
+
   // 2.11 Elysium agent 触发 depiler 原有搜索（background → options）
   triggerAgentSearch(data: {
     requestId: string;

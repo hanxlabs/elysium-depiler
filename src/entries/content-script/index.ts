@@ -8,6 +8,7 @@ import type { IMetadataPiniaStorageSchema } from "@/shared/types/storages/metada
 import type { IConfigPiniaStorageSchema } from "@/shared/types/storages/config.ts";
 
 import { mountApp } from "./app/init.ts";
+import "./siteLogin.ts";
 
 async function initContentScript() {
   const configStore = (await sendMessage("getExtStorage", "config")) as IConfigPiniaStorageSchema | undefined;

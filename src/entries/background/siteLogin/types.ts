@@ -2,6 +2,7 @@ export interface SiteLoginCredentials {
   username?: string;
   password?: string;
   code?: string;
+  twoFactorSecret?: string;
 }
 
 export interface SiteLoginTarget {
